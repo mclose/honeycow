@@ -1,0 +1,18 @@
+line-length = 100
+target-version = "py312"
+
+[lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "W",    # warnings
+    "I",    # import order
+    "B",    # bugbear
+    "UP",   # pyupgrade
+]
+ignore = [
+    "E501", # line length is mostly fine; ruff format handles it
+]
+
+[lint.per-file-ignores]
+"tests/*" = ["F841", "B011"]

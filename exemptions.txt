@@ -1,0 +1,12 @@
+# Honeycow exemption list — one zone or name per line.
+# Each entry matches the name itself AND all subnames -> REFUSED instead of
+# squatted. Comments start with '#'; blank lines are ignored.
+#
+# Edit this file and run:
+#   docker exec honeycow kill -HUP 1
+# to reload without restarting the container.
+#
+# Examples (uncomment to use):
+# example.com
+# my-friend.org
+# secret.internal

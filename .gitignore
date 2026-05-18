@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+venv/
+.venv/
+.env
+*.log
+*.jsonl
+.DS_Store
+
+# Claude Code: ignore everything in .claude/ by default; opt in per-file.
+.claude/*
+!.claude/settings.json

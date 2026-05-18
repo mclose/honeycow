@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>honeycow</title>
+  <style>
+    body { font-family: -apple-system, system-ui, sans-serif; max-width: 38em; margin: 4em auto; padding: 0 1em; line-height: 1.5; color: #222; }
+    code { background: #f3f3f3; padding: 0.1em 0.3em; border-radius: 3px; }
+    h1 { letter-spacing: -0.02em; }
+    .small { color: #666; font-size: 0.9em; }
+  </style>
+</head>
+<body>
+  <h1>honeycow</h1>
+  <p><em>this is not the cow you are looking for.</em></p>
+  <p>
+    You reached this page because something on your network resolved a
+    hostname whose DNS answer pointed at our IP, then connected to it
+    over HTTP. Most often that means a scanner or misbehaving client
+    queried this DNS server expecting a real authoritative response.
+  </p>
+  <p>
+    Honeycow is a deliberately incorrect DNS server &mdash; an NS squatter
+    that synthesizes plausible-looking answers for any name in any zone.
+    We do not own the domains we reply about. The IP your client connected
+    to is ours; the records that pointed it here are fabricated.
+  </p>
+  <h2>If you operate a zone that honeycow is squatting on</h2>
+  <p>
+    Email <a href="mailto:abuse@honeycow.net">abuse@honeycow.net</a> from a
+    contact tied to the zone you want exempted, and we will add it to the
+    block list. Future queries for that zone (and its subnames) will
+    return <code>REFUSED</code> instead of synthesized records.
+  </p>
+  <p class="small">
+    Source: <a href="https://github.com/mclose/honeycow">github.com/mclose/honeycow</a>.
+    Sibling project: <a href="https://github.com/mclose/chaoscow">chaoscow</a>,
+    the polite cousin.
+  </p>
+</body>
+</html>

@@ -1,0 +1,32 @@
+name: honeycow
+
+# Production override. Apply with:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#   (or `make docker-up-prod`)
+#
+# Binds DNS (:53) and HTTP (:80) to specific public IPs on the host
+# instead of 0.0.0.0/::, which avoids collisions with systemd-resolved
+# on 127.0.0.53 and makes the listening interfaces explicit.
+#
+# Set in this host's .env (gitignored):
+#   HONEY_PUBLIC_IPV4=<the public IPv4 NS glue points to>
+#   HONEY_PUBLIC_IPV6=<the public IPv6, or remove the v6 ports below>
+
+services:
+  honey-ns:
+    ports: !override
+      - "${HONEY_PUBLIC_IPV4:?HONEY_PUBLIC_IPV4 must be set in .env}:53:53/udp"
+      - "${HONEY_PUBLIC_IPV4:?HONEY_PUBLIC_IPV4 must be set in .env}:53:53/tcp"
+      - "${HONEY_PUBLIC_IPV4:?HONEY_PUBLIC_IPV4 must be set in .env}:80:80/tcp"
+      - "[${HONEY_PUBLIC_IPV6:?HONEY_PUBLIC_IPV6 must be set in .env}]:53:53/udp"
+      - "[${HONEY_PUBLIC_IPV6:?HONEY_PUBLIC_IPV6 must be set in .env}]:53:53/tcp"
+      - "[${HONEY_PUBLIC_IPV6:?HONEY_PUBLIC_IPV6 must be set in .env}]:80:80/tcp"
+
+# Enable IPv6 on the default bridge so dockerd can NAT v6 traffic from the
+# host's public IPv6 into the container.
+networks:
+  default:
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: fd00:beef:beef::/64

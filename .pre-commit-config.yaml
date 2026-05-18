@@ -1,0 +1,17 @@
+# Run via `pre-commit install` once, then ruff + pytest fire on every commit.
+# Hooks fail closed — no `--no-verify` shortcuts.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.4
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest
+        entry: venv/bin/pytest -q tests/
+        language: system
+        pass_filenames: false
+        always_run: true

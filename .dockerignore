@@ -1,0 +1,15 @@
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.git/
+.github/
+tests/
+docs/
+*.log
+*.jsonl
+.env
+README.md
+CHANGELOG.md

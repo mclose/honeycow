@@ -36,6 +36,7 @@ services:
       HONEY_ABUSE_EMAIL: ${HONEY_ABUSE_EMAIL:-abuse@example.com}
       HONEY_ABUSE_URL: ${HONEY_ABUSE_URL:-https://example.com}
       HONEY_TXT_CALLING_CARD: "${HONEY_TXT_CALLING_CARD:-honeycow: this is not the cow you are looking for. a polite ns squatter. https://example.com abuse@example.com}"
+      HONEY_VERSION_BIND_TXT: "${HONEY_VERSION_BIND_TXT:-}"
       HONEY_LOG: /var/log/honeycow/events.jsonl
       HONEY_EXEMPTION_FILE: /etc/honeycow/exemptions.txt
       HONEY_STATIC_INDEX: /app/static/index.html

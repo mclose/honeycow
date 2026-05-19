@@ -84,6 +84,12 @@ TXT_CALLING_CARD = os.environ.get(
     _DEFAULT_TXT_CALLING_CARD,
 )
 
+# Optional themed bluff for the classic CHAOS-class `version.bind. TXT CH`
+# fingerprint query. When empty, falls back to the calling card (same as any
+# other CH-class TXT query). When set, this string is returned instead.
+# Encourages operator flavor without baking deployment identity into source.
+VERSION_BIND_TXT = os.environ.get("HONEY_VERSION_BIND_TXT", "")
+
 # Public addresses of the honeycow VPS. PUBLIC_A is required at runtime
 # (honey_ns.main validates it); the loopback default keeps test imports
 # clean.

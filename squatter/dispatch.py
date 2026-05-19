@@ -34,6 +34,11 @@ import dns.rdatatype
 from squatter import base
 from squatter.exemptions import ExemptionList
 
+# `version.bind.` is the most famous CHAOS-class fingerprint query (RFC 4892
+# adjacent, BIND convention). When HONEY_VERSION_BIND_TXT is set, this exact
+# name gets a themed bluff instead of the generic calling card.
+_VERSION_BIND = dns.name.from_text("version.bind.")
+
 # Meta QTYPEs that are never valid in a question section (RFC 6895).
 META_QTYPES = frozenset({
     dns.rdatatype.OPT,
@@ -86,13 +91,17 @@ def dispatch(
     if question.rdclass == dns.rdataclass.CH:
         response = base.make_response(query)
         if qtype == dns.rdatatype.TXT:
+            text = base.TXT_CALLING_CARD
+            handler = "synth_txt_ch"
+            if base.VERSION_BIND_TXT and qname == _VERSION_BIND:
+                text = base.VERSION_BIND_TXT
+                handler = "synth_txt_ch_version_bind"
             response.answer.append(
                 base.synth_txt_rrset(
-                    qname, base.TTL_TXT, base.TXT_CALLING_CARD,
-                    rdclass=dns.rdataclass.CH,
+                    qname, base.TTL_TXT, text, rdclass=dns.rdataclass.CH,
                 )
             )
-            return response, "synth_txt_ch"
+            return response, handler
         if qtype == dns.rdatatype.ANY:
             response.answer.append(
                 base.synth_hinfo_rrset(qname, rdclass=dns.rdataclass.CH)

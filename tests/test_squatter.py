@@ -107,8 +107,8 @@ def test_ixfr_refused():
     assert handler == "refused_xfr"
 
 
-def test_chaos_class_version_bind_returns_calling_card():
-    """The classic `version.bind TXT CH` scanner fingerprint gets bluffed."""
+def test_chaos_class_version_bind_returns_calling_card_by_default():
+    """Without HONEY_VERSION_BIND_TXT set, version.bind gets the calling card."""
     q = _make_query("version.bind.", dns.rdatatype.TXT, qclass=dns.rdataclass.CH)
     resp, handler = dispatch.dispatch(q, ExemptionList())
     assert resp.rcode() == dns.rcode.NOERROR
@@ -121,6 +121,29 @@ def test_chaos_class_version_bind_returns_calling_card():
     # CH-class responses don't mix in IN-class auth/glue.
     assert not resp.authority
     assert not resp.additional
+
+
+def test_chaos_class_version_bind_uses_themed_response_when_set(monkeypatch):
+    """When HONEY_VERSION_BIND_TXT is set, version.bind gets that string."""
+    themed = "BIND 9.20 fl.oz. of pure local example.com"
+    monkeypatch.setattr(base, "VERSION_BIND_TXT", themed)
+    q = _make_query("version.bind.", dns.rdatatype.TXT, qclass=dns.rdataclass.CH)
+    resp, handler = dispatch.dispatch(q, ExemptionList())
+    assert handler == "synth_txt_ch_version_bind"
+    answers = resp.answer[0]
+    txt_strings = b"".join(answers[0].strings)
+    assert txt_strings == themed.encode("utf-8")
+
+
+def test_chaos_class_other_name_still_calling_card_when_version_bind_set(monkeypatch):
+    """The themed override applies only to version.bind, not other CH TXT names."""
+    monkeypatch.setattr(base, "VERSION_BIND_TXT", "BIND 9.20 fl.oz. of pure local example.com")
+    q = _make_query("hostname.bind.", dns.rdatatype.TXT, qclass=dns.rdataclass.CH)
+    resp, handler = dispatch.dispatch(q, ExemptionList())
+    assert handler == "synth_txt_ch"
+    answers = resp.answer[0]
+    txt_strings = b"".join(answers[0].strings)
+    assert txt_strings == base.TXT_CALLING_CARD.encode("utf-8")
 
 
 def test_chaos_class_any_returns_hinfo_in_ch():

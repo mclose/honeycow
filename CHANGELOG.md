@@ -24,3 +24,9 @@ not yet have releases.
   DNS-native healthcheck, bind-mounted exemption file.
 - pytest unit suite covering dispatch, synthesis, exemption loader, env
   parsing, and deployment file shape.
+- HTTP closer logs `client_ip` (resolved via `X-Forwarded-For` when the
+  on-wire peer is private/loopback) and `forwarded_for` (raw header) so
+  Caddy-fronted deployments retain real scanner IPs in events.
+- `docs/bootstrap.md` — full from-scratch host-rebuild runbook covering
+  every non-vanilla touch (systemd-resolved, Docker install, UFW +
+  ufw-docker, TSIG / first-time cert issue).

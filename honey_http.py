@@ -11,6 +11,7 @@ at startup; if unreadable, serves a minimal hard-coded fallback.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import time
 from pathlib import Path
@@ -43,13 +44,13 @@ def load_body(static_path: Path) -> bytes:
         return _FALLBACK_BODY.encode("utf-8")
 
 
-def _parse_request(data: bytes) -> tuple[str, str, str, str]:
-    """Pull method, path, Host, and User-Agent from a request prefix.
+def _parse_request(data: bytes) -> tuple[str, str, str, str, str]:
+    """Pull method, path, Host, User-Agent, and X-Forwarded-For from a request.
 
     All fields are best-effort and never raise — the closer logs whatever
     it can see and serves the same body either way.
     """
-    method = path = host = ua = ""
+    method = path = host = ua = xff = ""
     try:
         text = data.decode("latin-1", errors="replace")
         lines = text.split("\r\n")
@@ -67,9 +68,45 @@ def _parse_request(data: bytes) -> tuple[str, str, str, str]:
                 host = value
             elif name == "user-agent":
                 ua = value
+            elif name == "x-forwarded-for":
+                xff = value
     except Exception:  # pragma: no cover — pure best-effort
         pass
-    return method, path, host, ua
+    return method, path, host, ua, xff
+
+
+def _is_trusted_proxy(ip: str) -> bool:
+    """True when the on-wire peer is a private/loopback address.
+
+    The honeycow closer is fronted by Caddy on the docker bridge in
+    production; any non-private peer means something hit the closer
+    socket directly and its XFF header cannot be trusted.
+    """
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return addr.is_private or addr.is_loopback or addr.is_link_local
+
+
+def _resolve_client_ip(peer_ip: str, xff: str) -> str:
+    """Pick the real client IP from XFF when the peer is a trusted proxy.
+
+    Caddy v2's reverse_proxy overwrites X-Forwarded-For with the immediate
+    client's IP by default, so the chain is normally a single entry. If
+    Caddy is later configured with trusted_proxies it will append instead,
+    in which case the rightmost entry is the one Caddy itself recorded —
+    anything to the left was supplied by the client and may be spoofed.
+    Either way, taking the rightmost is correct.
+    """
+    if not xff or not _is_trusted_proxy(peer_ip):
+        return peer_ip
+    last = xff.rsplit(",", 1)[-1].strip()
+    try:
+        ipaddress.ip_address(last)
+    except ValueError:
+        return peer_ip
+    return last
 
 
 class HTTPCloser:
@@ -123,7 +160,8 @@ class HTTPCloser:
             except OSError:
                 pass
 
-        method, path, host, ua = _parse_request(request_data)
+        method, path, host, ua, xff = _parse_request(request_data)
+        client_ip = _resolve_client_ip(src_ip, xff)
         honey_logging.write_jsonl(self.log_path, {
             "schema_version": honey_logging.SCHEMA_VERSION,
             "ts": honey_logging.now_iso(),
@@ -132,6 +170,8 @@ class HTTPCloser:
             "src_ip": src_ip,
             "src_port": src_port,
             "dst_bind": dst_bind,
+            "client_ip": client_ip,
+            "forwarded_for": xff,
             "method": method,
             "path": path,
             "host": host,

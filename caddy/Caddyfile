@@ -1,0 +1,50 @@
+# honeycow Caddy frontdoor (opt-in overlay).
+#
+# Two routing concerns:
+#   1. https://honeycow.net           -> static explainer (honeycow_net.html)
+#   2. anything else on :80           -> reverse-proxy to the honey-ns closer
+#
+# TLS certs are managed externally by the acme.sh sidecar (DNS-01 via BIND
+# nsupdate). Caddy does not issue or renew anything itself; it just reads the
+# files from the shared /certs volume. After acme.sh renews, signal Caddy to
+# pick up the new cert (see docker-compose.caddy.yml notes).
+
+{
+	# Admin API on a non-default port so the acme sidecar can trigger reloads
+	# without using the docker socket. Bind to all interfaces inside the
+	# container; only sidecars on the compose network can reach it.
+	admin 0.0.0.0:2019
+
+	# We never auto-issue. Stub email so the auto-issuer wouldn't try anyway.
+	email noreply@example.invalid
+}
+
+# Explicit HTTP->HTTPS redirect for honeycow.net so it wins over the catch-all.
+http://honeycow.net {
+	redir https://{host}{uri} permanent
+}
+
+# The actual explainer site.
+honeycow.net {
+	tls /certs/honeycow.net/fullchain.pem /certs/honeycow.net/privkey.pem
+
+	root * /srv/honeycow
+	file_server {
+		index honeycow_net.html
+	}
+	encode gzip zstd
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		# Closer page is read by curl/scanners, not browsers; CSP optional.
+	}
+}
+
+# Catch-all for any other Host on :80 — the scanner closer. Caddy proxies
+# the request straight through to honeycow's existing HTTP listener so the
+# same Python code keeps logging the request.
+http:// {
+	reverse_proxy honey-ns:80
+}

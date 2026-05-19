@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>honeycow — a polite NS squatter</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --fg: #1f1f1f;
+      --muted: #555;
+      --bg: #fbfaf6;
+      --accent: #c98a1a;
+      --rule: #e6e2d4;
+    }
+    html { box-sizing: border-box; }
+    *, *::before, *::after { box-sizing: inherit; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                   "Helvetica Neue", Arial, sans-serif;
+      color: var(--fg);
+      background: var(--bg);
+      line-height: 1.55;
+    }
+    .wrap {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 2.5rem 1.25rem 4rem;
+    }
+    header img {
+      display: block;
+      max-width: 100%;
+      height: auto;
+      margin: 0 auto 1.5rem;
+      border-radius: 12px;
+    }
+    h1 {
+      font-size: 2rem;
+      margin: 0 0 0.25rem;
+      letter-spacing: -0.01em;
+    }
+    h2 {
+      font-size: 1.15rem;
+      margin: 2rem 0 0.5rem;
+      letter-spacing: -0.01em;
+    }
+    p { margin: 0.75rem 0; }
+    .lede {
+      font-size: 1.1rem;
+      color: var(--muted);
+      margin-top: 0;
+    }
+    a { color: var(--accent); }
+    a:hover { text-decoration: underline; }
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+      background: #f0ecdf;
+      padding: 0.1em 0.35em;
+      border-radius: 4px;
+    }
+    hr {
+      border: 0;
+      border-top: 1px solid var(--rule);
+      margin: 2.5rem 0;
+    }
+    footer {
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <img src="honeycow.jpg"
+           alt="A black-and-white spotted cow whose body is a glass jar full of honey, in a field of yellow flowers and bees."
+           width="1600" height="873">
+      <h1>honeycow</h1>
+      <p class="lede">A polite NS squatter. You probably got here because
+        something resolved through one of our nameservers and you wanted to
+        know what was going on.</p>
+    </header>
+
+    <h2>What you saw</h2>
+    <p>The DNS server you queried claimed to be authoritative for a name
+      it has no real business answering for. It returned a synthesized
+      response pointing every <code>A</code> / <code>AAAA</code> at this
+      same server, plus an <code>NS</code> rrset, an <code>SOA</code>, and
+      a <code>TXT</code> calling card.</p>
+    <p>That was on purpose. It's a research / observation tool — a sibling
+      of <a href="https://github.com/mclose/chaoscow">chaoscow</a>, which is
+      the polite, single-zone version. This one (honeycow) is gleefully
+      authoritative for every zone except a small exemption list, and it
+      logs whoever asked.</p>
+
+    <h2>What it isn't</h2>
+    <p>It isn't a phishing landing page, a credential trap, or anything
+      trying to deliver content to you. The HTTP closer page is the only
+      thing you'd ever get from this server, and it's the same page no
+      matter what name you came in on.</p>
+
+    <h2>Something looks wrong</h2>
+    <p>If a name that should be live is resolving through here, or you'd
+      like an exemption added, or you're trying to track down where one of
+      our responses came from, email
+      <a href="mailto:abuse@honeycow.net">abuse@honeycow.net</a> with the
+      query name, the timestamp, and a packet capture if you have one. A
+      human reads it.</p>
+
+    <hr>
+
+    <footer>
+      <p>honeycow is open source &middot;
+        <a href="https://github.com/mclose/honeycow">github.com/mclose/honeycow</a></p>
+    </footer>
+  </div>
+</body>
+</html>

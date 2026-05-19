@@ -33,13 +33,13 @@ import dns.rrset
 # Identity (env-configurable)
 # ---------------------------------------------------------------------------
 
-_DEFAULT_DOMAIN = "honeycow.net."
-_DEFAULT_NS_HOSTS = "ns1.honeycow.net,ns2.honeycow.net"
-_DEFAULT_ABUSE_EMAIL = "abuse@honeycow.net"
-_DEFAULT_ABUSE_URL = "https://honeycow.net"
+_DEFAULT_DOMAIN = "example.com."
+_DEFAULT_NS_HOSTS = "ns1.example.com,ns2.example.com"
+_DEFAULT_ABUSE_EMAIL = "abuse@example.com"
+_DEFAULT_ABUSE_URL = "https://example.com"
 _DEFAULT_TXT_CALLING_CARD = (
     "honeycow: this is not the cow you are looking for. "
-    "a polite ns squatter. https://honeycow.net abuse@honeycow.net"
+    "a polite ns squatter. https://example.com abuse@example.com"
 )
 
 DOMAIN = dns.name.from_text(os.environ.get("HONEY_DOMAIN", _DEFAULT_DOMAIN))
@@ -65,7 +65,7 @@ _ABUSE_EMAIL = os.environ.get("HONEY_ABUSE_EMAIL", _DEFAULT_ABUSE_EMAIL)
 
 
 def _email_to_rname(email: str) -> dns.name.Name:
-    """abuse@honeycow.net -> abuse.honeycow.net. for use as SOA RNAME.
+    """abuse@example.com -> abuse.example.com. for use as SOA RNAME.
 
     Local-parts containing dots would need DNS escaping; the simple form
     used by typical abuse contacts does not. A dotted local-part will

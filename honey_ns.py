@@ -442,6 +442,7 @@ async def handle_tcp(
 
 async def serve(
     bind_v4: str, bind_v6: str, port: int, http_port: int,
+    http_bind_v4: str, http_bind_v6: str,
     timeout: float, max_conns: int, accept_backlog: int,
     max_queries_per_conn: int,
     udp_rate_limiter: TokenBucketRateLimiter,
@@ -515,7 +516,7 @@ async def serve(
         body = honey_http.load_body(static_path)
         try:
             http_servers = await honey_http.serve(
-                bind_v4, bind_v6, http_port, body, LOG_PATH,
+                http_bind_v4, http_bind_v6, http_port, body, LOG_PATH,
             )
         except OSError as exc:
             log.warning("HTTP bind failed on port %d: %s", http_port, exc)
@@ -538,6 +539,14 @@ def _load_config() -> dict:
         "bind_v6": os.environ.get("HONEY_BIND_V6", DEFAULT_BIND_V6),
         "port": int(os.environ.get("HONEY_PORT", DEFAULT_PORT)),
         "http_port": int(os.environ.get("HONEY_HTTP_PORT", DEFAULT_HTTP_PORT)),
+        "http_bind_v4": os.environ.get(
+            "HONEY_HTTP_BIND_V4",
+            os.environ.get("HONEY_BIND_V4", DEFAULT_BIND_V4),
+        ),
+        "http_bind_v6": os.environ.get(
+            "HONEY_HTTP_BIND_V6",
+            os.environ.get("HONEY_BIND_V6", DEFAULT_BIND_V6),
+        ),
         "timeout": float(os.environ.get("HONEY_TCP_TIMEOUT", DEFAULT_TCP_TIMEOUT)),
         "max_conns": int(os.environ.get(
             "HONEY_TCP_MAX_CONNS", DEFAULT_TCP_MAX_CONNS,
@@ -619,6 +628,7 @@ def main() -> int:
     loop = asyncio.new_event_loop()
     serve_task = loop.create_task(serve(
         cfg["bind_v4"], cfg["bind_v6"], cfg["port"], cfg["http_port"],
+        cfg["http_bind_v4"], cfg["http_bind_v6"],
         cfg["timeout"], cfg["max_conns"], cfg["accept_backlog"],
         cfg["max_queries_per_conn"], udp_rate_limiter,
         Path(cfg["static_path"]),

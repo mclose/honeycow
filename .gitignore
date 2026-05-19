@@ -10,6 +10,9 @@ venv/
 *.jsonl
 .DS_Store
 
+# acme.sh TSIG key for DNS-01 challenge — secret, do not commit.
+acme/tsig.key
+
 # Claude Code: ignore everything in .claude/ by default; opt in per-file.
 .claude/*
 !.claude/settings.json

@@ -31,11 +31,11 @@ services:
       HONEY_PUBLIC_AAAA: ${HONEY_PUBLIC_AAAA:-}
       HONEY_SINKHOLE_A: ${HONEY_SINKHOLE_A:-}
       HONEY_SINKHOLE_AAAA: ${HONEY_SINKHOLE_AAAA:-}
-      HONEY_DOMAIN: ${HONEY_DOMAIN:-honeycow.net.}
-      HONEY_NS_HOSTS: ${HONEY_NS_HOSTS:-ns1.honeycow.net,ns2.honeycow.net}
-      HONEY_ABUSE_EMAIL: ${HONEY_ABUSE_EMAIL:-abuse@honeycow.net}
-      HONEY_ABUSE_URL: ${HONEY_ABUSE_URL:-https://honeycow.net}
-      HONEY_TXT_CALLING_CARD: ${HONEY_TXT_CALLING_CARD:-honeycow: this is not the cow you are looking for. a polite ns squatter. https://honeycow.net abuse@honeycow.net}
+      HONEY_DOMAIN: ${HONEY_DOMAIN:-example.com.}
+      HONEY_NS_HOSTS: ${HONEY_NS_HOSTS:-ns1.example.com,ns2.example.com}
+      HONEY_ABUSE_EMAIL: ${HONEY_ABUSE_EMAIL:-abuse@example.com}
+      HONEY_ABUSE_URL: ${HONEY_ABUSE_URL:-https://example.com}
+      HONEY_TXT_CALLING_CARD: "${HONEY_TXT_CALLING_CARD:-honeycow: this is not the cow you are looking for. a polite ns squatter. https://example.com abuse@example.com}"
       HONEY_LOG: /var/log/honeycow/events.jsonl
       HONEY_EXEMPTION_FILE: /etc/honeycow/exemptions.txt
       HONEY_STATIC_INDEX: /app/static/index.html

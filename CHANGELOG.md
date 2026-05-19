@@ -30,3 +30,8 @@ not yet have releases.
 - `docs/bootstrap.md` — full from-scratch host-rebuild runbook covering
   every non-vanilla touch (systemd-resolved, Docker install, UFW +
   ufw-docker, TSIG / first-time cert issue).
+- `tools/morning_report.py` (+ `make report` target) — analyse
+  events.jsonl plus an optional `ufw.log` to produce a daily summary:
+  v4/v6 split, scanner-fingerprint families, top probed ports, IPs
+  appearing in both UFW and HoneyCow events, and an optional CT-log
+  spike check via `--cert-issued`.

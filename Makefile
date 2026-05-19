@@ -96,6 +96,15 @@ docker-logs-prod:
 logs:
 	docker compose exec honey-ns tail -f /var/log/honeycow/events.jsonl
 
+# Generate a morning report from local copies of events.jsonl and ufw.log.
+# Pass EVENTS=, UFW=, HOURS=, CERT_ISSUED= to override defaults.
+EVENTS ?= /tmp/honeycow-analysis/events.jsonl
+UFW ?= /tmp/honeycow-analysis/ufw.log
+HOURS ?= 24
+report:
+	@tools/morning_report.py --events $(EVENTS) --ufw $(UFW) --hours $(HOURS) \
+		$(if $(CERT_ISSUED),--cert-issued $(CERT_ISSUED))
+
 # Smoke test against a live deployment. HOST defaults to localhost; override
 # to point at a remote target.
 HOST ?= 127.0.0.1

@@ -41,6 +41,7 @@ names on the exemption list).
 Active design docs:
 
 - `docs/architecture.md`
+- `docs/bootstrap.md`
 - `docs/deployment.md`
 - `docs/rationale.md`
 

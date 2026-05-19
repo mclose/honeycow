@@ -91,6 +91,8 @@ so committed source contains only placeholders.
 ## Documentation
 
 - [Architecture](docs/architecture.md): request flow, modules, DNS behavior.
+- [Bootstrap](docs/bootstrap.md): rebuild-from-scratch runbook for the
+  full host (resolved, Docker, UFW, TSIG, first-time cert issue).
 - [Deployment](docs/deployment.md): local setup, Docker Compose, delegation,
   smoke checks, and exemption workflow.
 - [Rationale](docs/rationale.md): why this exists and what it is and isn't.

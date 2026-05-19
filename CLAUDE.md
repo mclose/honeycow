@@ -83,7 +83,11 @@ may require approval even on high ports.
 - Every queried name gets a synthesized authoritative-looking answer
   unless it is on the exemption list (or a subname of one), in which
   case the response is `REFUSED`.
-- Non-IN-class queries, AXFR / IXFR return `REFUSED`.
+- CHAOS-class queries get the bluff: `TXT` returns the calling-card text in
+  CH class, `ANY` returns the RFC 8482 HINFO in CH class, other CH qtypes
+  return NOERROR / empty. Other non-IN classes (HESIOD, NONE, etc.) return
+  `REFUSED`.
+- AXFR / IXFR return `REFUSED` regardless of class.
 - Meta qtypes (OPT, TKEY, TSIG, MAILA, MAILB) return `FORMERR`.
 - `ANY` queries return one synthesized HINFO RRset (RFC 8482) — even
   honeycow stays polite on ANY-minimization, since amplification would

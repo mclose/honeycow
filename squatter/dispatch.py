@@ -3,10 +3,14 @@
 Decision tree:
 
   1. Exemption list -> REFUSED (operators of complaining zones get peace).
-  2. Class check     -> non-IN -> REFUSED.
-  3. AXFR / IXFR     -> REFUSED (we are not a real zone).
+  2. Class check     -> IN or CH allowed, others REFUSED.
+  3. AXFR / IXFR     -> REFUSED (regardless of class — we are not a real zone).
   4. Meta qtypes     -> FORMERR.
-  5. QTYPE switch:
+  5. CH class branch -> TXT returns calling card in CH class (the classic
+     `version.bind` / `hostname.bind` / `id.server` / `authors.bind`
+     fingerprint queries get the bluff); ANY returns RFC 8482 HINFO in CH;
+     other CH qtypes return NOERROR / empty.
+  6. IN class QTYPE switch:
        ANY     -> minimal RFC 8482 HINFO.
        A       -> synthesized A to sinkhole IP, NS in authority, glue in additional.
        AAAA    -> synthesized AAAA when sinkhole_aaaa is set, else NODATA.
@@ -70,7 +74,7 @@ def dispatch(
     if exemptions.is_exempt(qname):
         return base.refused(query), "exempt"
 
-    if question.rdclass != dns.rdataclass.IN:
+    if question.rdclass not in (dns.rdataclass.IN, dns.rdataclass.CH):
         return base.refused(query), "refused_class"
 
     if qtype in (dns.rdatatype.AXFR, dns.rdatatype.IXFR):
@@ -78,6 +82,26 @@ def dispatch(
 
     if qtype in META_QTYPES:
         return base.formerr(query), "formerr_meta_qtype"
+
+    if question.rdclass == dns.rdataclass.CH:
+        response = base.make_response(query)
+        if qtype == dns.rdatatype.TXT:
+            response.answer.append(
+                base.synth_txt_rrset(
+                    qname, base.TTL_TXT, base.TXT_CALLING_CARD,
+                    rdclass=dns.rdataclass.CH,
+                )
+            )
+            return response, "synth_txt_ch"
+        if qtype == dns.rdatatype.ANY:
+            response.answer.append(
+                base.synth_hinfo_rrset(qname, rdclass=dns.rdataclass.CH)
+            )
+            return response, "minimal_any_hinfo_ch"
+        # Any other CH qtype gets NOERROR / empty — no IN-class auth/glue
+        # would make sense here, and CH-class SOA synthesis is more
+        # surface-area than scanners actually probe.
+        return response, "ch_nodata"
 
     if qtype == dns.rdatatype.ANY:
         response = base.make_response(query)

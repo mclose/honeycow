@@ -51,8 +51,11 @@ synthesized for any qtype.
 | `<name>` TXT | One TXT RRset whose payload is `HONEY_TXT_CALLING_CARD`. |
 | `<name>` ANY | Minimal RFC 8482 HINFO RRset only. |
 | `<name>` CNAME/PTR/SRV/etc. | `NODATA` with synthesized SOA in authority. |
-| Non-IN class | `REFUSED`. |
-| AXFR / IXFR | `REFUSED`. |
+| `<name>` TXT (CH class) | Calling-card TXT RRset in CH class. Catches `version.bind` / `hostname.bind` / `id.server` / `authors.bind` scanner fingerprints. |
+| `<name>` ANY (CH class) | Minimal RFC 8482 HINFO RRset in CH class. |
+| `<name>` other (CH class) | `NOERROR` / empty answer. No IN-class auth/glue mixed in. |
+| Other non-IN class (HESIOD, NONE, etc.) | `REFUSED`. |
+| AXFR / IXFR | `REFUSED` (regardless of class). |
 | Meta qtype (OPT/TKEY/TSIG/MAILA/MAILB) | `FORMERR`. |
 
 The authority section of A/AAAA/SOA/TXT responses carries a synthesized

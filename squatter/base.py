@@ -185,7 +185,12 @@ def synth_mx_rrset(
     return rrset
 
 
-def synth_txt_rrset(name: dns.name.Name, ttl: int, text: str) -> dns.rrset.RRset:
+def synth_txt_rrset(
+    name: dns.name.Name,
+    ttl: int,
+    text: str,
+    rdclass: dns.rdataclass.RdataClass = dns.rdataclass.IN,
+) -> dns.rrset.RRset:
     encoded = text.encode("utf-8")
     if len(encoded) > TXT_CHUNK_LIMIT:
         chunks = [
@@ -194,22 +199,24 @@ def synth_txt_rrset(name: dns.name.Name, ttl: int, text: str) -> dns.rrset.RRset
         ]
     else:
         chunks = [encoded]
-    rrset = dns.rrset.RRset(name, dns.rdataclass.IN, dns.rdatatype.TXT)
+    rrset = dns.rrset.RRset(name, rdclass, dns.rdatatype.TXT)
     rrset.add(
-        dns.rdtypes.ANY.TXT.TXT(dns.rdataclass.IN, dns.rdatatype.TXT, chunks),
+        dns.rdtypes.ANY.TXT.TXT(rdclass, dns.rdatatype.TXT, chunks),
         ttl,
     )
     return rrset
 
 
 def synth_hinfo_rrset(
-    name: dns.name.Name, ttl: int = TTL_NEGATIVE,
+    name: dns.name.Name,
+    ttl: int = TTL_NEGATIVE,
+    rdclass: dns.rdataclass.RdataClass = dns.rdataclass.IN,
 ) -> dns.rrset.RRset:
     """RFC 8482 minimal ANY response."""
-    rrset = dns.rrset.RRset(name, dns.rdataclass.IN, dns.rdatatype.HINFO)
+    rrset = dns.rrset.RRset(name, rdclass, dns.rdatatype.HINFO)
     rrset.add(
         dns.rdtypes.ANY.HINFO.HINFO(
-            dns.rdataclass.IN,
+            rdclass,
             dns.rdatatype.HINFO,
             b"RFC8482",
             b"",

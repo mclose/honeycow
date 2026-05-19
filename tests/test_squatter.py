@@ -107,8 +107,44 @@ def test_ixfr_refused():
     assert handler == "refused_xfr"
 
 
-def test_chaos_class_refused():
-    q = _make_query("example.com.", dns.rdatatype.TXT, qclass=dns.rdataclass.CH)
+def test_chaos_class_version_bind_returns_calling_card():
+    """The classic `version.bind TXT CH` scanner fingerprint gets bluffed."""
+    q = _make_query("version.bind.", dns.rdatatype.TXT, qclass=dns.rdataclass.CH)
+    resp, handler = dispatch.dispatch(q, ExemptionList())
+    assert resp.rcode() == dns.rcode.NOERROR
+    assert handler == "synth_txt_ch"
+    answers = resp.answer[0]
+    assert answers.rdclass == dns.rdataclass.CH
+    assert answers.rdtype == dns.rdatatype.TXT
+    txt_strings = b"".join(answers[0].strings)
+    assert txt_strings == base.TXT_CALLING_CARD.encode("utf-8")
+    # CH-class responses don't mix in IN-class auth/glue.
+    assert not resp.authority
+    assert not resp.additional
+
+
+def test_chaos_class_any_returns_hinfo_in_ch():
+    q = _make_query("hostname.bind.", dns.rdatatype.ANY, qclass=dns.rdataclass.CH)
+    resp, handler = dispatch.dispatch(q, ExemptionList())
+    assert resp.rcode() == dns.rcode.NOERROR
+    assert handler == "minimal_any_hinfo_ch"
+    answers = resp.answer[0]
+    assert answers.rdclass == dns.rdataclass.CH
+    assert answers.rdtype == dns.rdatatype.HINFO
+
+
+def test_chaos_class_other_qtype_nodata():
+    """Non-TXT/ANY CH-class queries get NOERROR / empty (not REFUSED)."""
+    q = _make_query("foo.bind.", dns.rdatatype.A, qclass=dns.rdataclass.CH)
+    resp, handler = dispatch.dispatch(q, ExemptionList())
+    assert resp.rcode() == dns.rcode.NOERROR
+    assert handler == "ch_nodata"
+    assert not resp.answer
+
+
+def test_unsupported_class_still_refused():
+    """HESIOD (and other oddballs) remain REFUSED."""
+    q = _make_query("example.com.", dns.rdatatype.TXT, qclass=dns.rdataclass.HS)
     resp, handler = dispatch.dispatch(q, ExemptionList())
     assert resp.rcode() == dns.rcode.REFUSED
     assert handler == "refused_class"

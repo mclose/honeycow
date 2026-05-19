@@ -26,7 +26,7 @@ import ipaddress
 import json
 import re
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 # ---- classifiers -----------------------------------------------------------
@@ -94,7 +94,7 @@ def parse_ufw(path: Path, since: datetime) -> list[dict]:
         except ValueError:
             continue
         if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
+            ts = ts.replace(tzinfo=UTC)
         if ts < since:
             continue
         m = UFW_RE.search(rest)
@@ -248,12 +248,12 @@ def main() -> int:
                     help="ISO timestamp of recent cert issuance for CT-log spike check")
     args = ap.parse_args()
 
-    since = datetime.now(tz=timezone.utc) - timedelta(hours=args.hours)
+    since = datetime.now(tz=UTC) - timedelta(hours=args.hours)
     cert_issued = None
     if args.cert_issued:
         cert_issued = datetime.fromisoformat(args.cert_issued)
         if cert_issued.tzinfo is None:
-            cert_issued = cert_issued.replace(tzinfo=timezone.utc)
+            cert_issued = cert_issued.replace(tzinfo=UTC)
 
     events = load_events(args.events, since)
     ufw = parse_ufw(args.ufw, since) if args.ufw else []

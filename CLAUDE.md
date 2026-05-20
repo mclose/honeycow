@@ -1,112 +1,138 @@
 # HoneyCow Agent Context
 
-This file is the compact LLM-facing source of truth. For human docs,
-start with `README.md`, then `docs/architecture.md` and
-`docs/deployment.md`.
+## What this project is
 
-## Project
-
-HoneyCow is a Python NS-squatting DNS server. It synthesizes
+HoneyCow is a Python NS-squatting DNS honeypot. It synthesizes
 authoritative-looking responses (A, AAAA, NS, SOA, MX, TXT) for every
 queried name in every zone, pointing A/AAAA at a configurable sinkhole
-IP that defaults to the honeycow VPS itself. A catch-all HTTP closer
-on port 80 returns an explanation page to scanners who follow the DNS
-bluff.
+IP that defaults to the honeycow VPS itself. A catch-all HTTP closer on
+port 80 returns an explanation page to scanners who follow the bluff.
 
-It is the sibling of [chaoscow](https://github.com/mclose/chaoscow),
-with the **opposite** design contract: chaoscow is RFC-polite
-authoritative for one zone (REFUSED for everything else); honeycow is
-gleefully authoritative-claiming for every zone (REFUSED only for
-names on the exemption list).
+Sibling of [chaoscow](https://github.com/mclose/chaoscow) with the
+opposite design contract: chaoscow is RFC-polite authoritative for one
+zone (REFUSED for everything else); honeycow is gleefully
+authoritative-claiming for every zone (REFUSED only for names on the
+exemption list).
 
-## Current Architecture
+## Where docs live
 
-- `honey_ns.py`: asyncio UDP and TCP DNS listeners, wire parsing,
-  logging, TCP connection limits, UDP rate limiting, serialization,
-  signal handling (SIGHUP reloads exemptions).
-- `honey_http.py`: asyncio HTTP listener serving the catch-all closer
-  page for any Host / path.
-- `honey_logging.py`: JSONL event shaping and writing, shared by both
+- `CLAUDE.md` — this file (rules + context for Claude)
+- `README.md` — human onboarding
+- `docs/architecture.md` — wire behavior and dispatch table
+- `docs/bootstrap.md` — host rebuild runbook
+- `docs/deployment.md` — operational detail
+- `docs/rationale.md` — design rationale
+
+## Deploy topology
+
+Two-remote:
+
+- `origin` → `git@github.com:mclose/honeycow.git` (private; CI on push/PR)
+- `prod` → `honeycow:honeycow.git` (bare repo, post-receive hook
+  checks out main into `~/projects/honeycow` and runs `make up-prod`)
+
+`make deploy` = `git push origin main && git push prod main`. Branch
+protection on `main` requires PR + passing CI; pushes-to-prod are not
+gated, so the workflow is: PR → merge to main → push to prod from local
+or via `make deploy`.
+
+The prod stack is honey-ns + caddy (TLS for honeycow.net, reverse-proxy
+to honey-ns:80 for anything else) + acme (issues/renews honeycow.net
+cert via DNS-01 over BIND nsupdate). All three are required.
+
+## Hard rules
+
+- **Never hardcode identity strings.** `honeycow.net`, abuse address,
+  VPS IP — env-driven only. Reason: production values live in
+  gitignored `.env`; committed defaults are placeholders. Tests use
+  defaults from `tests/conftest.py`.
+- **Don't bleed honeycow patterns into chaoscow.** Opposite design
+  contracts. Honeycow = gleeful authoritative-claim for every zone;
+  chaoscow = RFC-polite for one zone. Keep them separate.
+- **Never `docker compose down -v`.** Would destroy the `honeycow_logs`
+  volume and lose all event history.
+- **Never edit `config/exemptions.txt` via atomic-rename writes only on
+  the VPS.** Editors and rsync are fine because the bind mount is on
+  the parent directory (see Gotchas) — but if you ever switch back to a
+  single-file bind mount, those writes won't propagate.
+
+## Gotchas
+
+- **No `kill` binary in the container.** The image is minimal +
+  read-only. To reload exemptions, use `docker kill -s HUP honeycow`
+  from the host. `docker exec honeycow kill -HUP 1` fails with "executable
+  file not found in $PATH".
+- **Bind-mount inode pinning.** We bind-mount the `config/` directory
+  (not the single `config/exemptions.txt` file) for a reason: single-file
+  bind mounts pin to the source inode at container-start time, so
+  atomic-rename writes (rsync, vim, most editors, our own Edit tool)
+  replace the file at the same path but a different inode — and the
+  container keeps reading the original inode's contents. Directory binds
+  re-resolve filenames on every access; any write strategy works.
+- **Caddy + acme are mandatory, not opt-in.** honeycow.net needs HTTPS
+  (Caddy terminates TLS) and honeycow itself can't (and shouldn't) terminate
+  TLS. The merged `docker-compose.prod.yml` reflects this. There is no
+  separate `docker-compose.caddy.yml` anymore.
+- **No EDNS / no recursion advertised.** AA=1, RA=0 on every synthesized
+  response. EDNS OPT records are intentionally omitted. Responses cap
+  at 512 bytes with TC=1 to force TCP fallback rather than EDNS-style
+  amplification.
+- **DigitalOcean / Shadowserver "open resolver" pipeline.** Shadowserver
+  scans the v4 internet with `A dnsscan.shadowserver.org` and reports
+  answerers to hosting providers. We REFUSE for known scanner-research
+  zones (see `config/exemptions.txt`'s scanner-research block) to stay off
+  the report, while still logging the probes. Don't remove those exemptions.
+- **IPv6 ingress is not actually working** despite the container binding
+  `[::]:53`. The morning report shows v6 UFW hits but zero v6 DNS queries
+  reaching honeycow. Treat this as a known bug, not a "did we deploy v6?"
+  question. Tracked in `~/.claude/TODO.md`.
+
+## Architecture (file map)
+
+- `honey_ns.py` — asyncio UDP + TCP DNS listeners, wire parsing,
+  logging, TCP connection limits, UDP rate limiting, SIGHUP handler.
+- `honey_http.py` — asyncio HTTP listener serving the catch-all closer.
+- `honey_logging.py` — JSONL event shaping/writing, shared by both
   listeners.
-- `squatter/base.py`: identity constants (DOMAIN, NS_HOSTS, HOSTMASTER,
-  TXT_CALLING_CARD, SINKHOLE_A/AAAA), record synthesizers, response
-  helpers, serialization.
-- `squatter/dispatch.py`: full-bluff dispatch — exemption check, class
-  check, AXFR/IXFR refusal, meta-qtype FORMERR, then QTYPE-driven
-  synthesis.
-- `squatter/exemptions.py`: text-file loader with SIGHUP reload.
-- `static/index.html`: the HTTP closer page.
-- `tools/healthcheck.py`: container healthcheck (SOA query against self).
-
-Active design docs:
-
-- `docs/architecture.md`
-- `docs/bootstrap.md`
-- `docs/deployment.md`
-- `docs/rationale.md`
-
-## Commands
-
-```bash
-make venv
-make lint
-make test
-HONEY_PUBLIC_A=127.0.0.1 make run
-make smoke HOST=127.0.0.1
-```
-
-`make run` binds local DNS and HTTP sockets. In sandboxed sessions it
-may require approval even on high ports.
-
-## Runtime Requirements
-
-- `HONEY_PUBLIC_A` is required (public IPv4 of the VPS — used as NS
-  glue and as the default sinkhole target).
-- `HONEY_PUBLIC_AAAA` is optional; empty disables IPv6 listeners and
-  AAAA answers.
-- `HONEY_SINKHOLE_A` / `HONEY_SINKHOLE_AAAA` override what synthesized
-  A/AAAA answers point at; defaults to the public address.
-- `HONEY_DOMAIN`, `HONEY_NS_HOSTS`, `HONEY_ABUSE_EMAIL`, and
-  `HONEY_TXT_CALLING_CARD` bake the squatter identity into every
-  bluffed response. The committed defaults are placeholders; production
-  values live in gitignored `.env`.
-- The Docker service is read-only, drops capabilities except
-  `NET_BIND_SERVICE`, and writes events to the `honeycow_logs` volume.
+- `squatter/base.py` — identity constants, record synthesizers,
+  response helpers, serialization. AA=1 / RA=0 lives here.
+- `squatter/dispatch.py` — full-bluff dispatch: exemption → class →
+  AXFR/IXFR → meta-qtype → QTYPE-driven synthesis.
+- `squatter/exemptions.py` — text-file loader with SIGHUP reload.
+  Parse failures keep the previous list in effect.
+- `config/exemptions.txt` — REFUSED list. Bind-mounted into the
+  container at `/etc/honeycow/`.
+- `static/index.html` — the HTTP closer page.
+- `caddy/Caddyfile` — TLS + reverse-proxy config (prod stack only).
+- `tools/healthcheck.py` — container healthcheck (SOA query against self).
+- `tools/morning_report.py` — daily traffic summary; see [[morning-report]]
+  feedback in agent memory.
 
 ## Protocol Constraints
 
 - UDP responses cap at 512 bytes. Oversized responses set `TC=1` with
-  empty answer/authority/additional sections so clients retry over
-  TCP.
+  empty answer/authority/additional sections so clients retry over TCP.
 - EDNS is intentionally unsupported. Responses omit OPT records.
 - TCP uses the RFC 1035 two-byte length prefix and serves multiple
   messages per connection up to `HONEY_TCP_MAX_QUERIES_PER_CONN`.
 - Every queried name gets a synthesized authoritative-looking answer
-  unless it is on the exemption list (or a subname of one), in which
+  unless it's on the exemption list (or a subname of one), in which
   case the response is `REFUSED`.
-- CHAOS-class queries get the bluff: `TXT` returns the calling-card text in
-  CH class, `ANY` returns the RFC 8482 HINFO in CH class, other CH qtypes
-  return NOERROR / empty. Other non-IN classes (HESIOD, NONE, etc.) return
-  `REFUSED`.
+- CHAOS-class queries get the bluff: `TXT` returns the calling-card
+  text in CH class, `ANY` returns the RFC 8482 HINFO in CH class, other
+  CH qtypes return NOERROR / empty. Other non-IN classes (HESIOD, NONE,
+  etc.) return `REFUSED`.
 - AXFR / IXFR return `REFUSED` regardless of class.
 - Meta qtypes (OPT, TKEY, TSIG, MAILA, MAILB) return `FORMERR`.
-- `ANY` queries return one synthesized HINFO RRset (RFC 8482) — even
-  honeycow stays polite on ANY-minimization, since amplification would
-  be obnoxious.
+- `ANY` queries return one synthesized HINFO RRset (RFC 8482). Even
+  honeycow stays polite on ANY-minimization; amplification would be
+  obnoxious.
 - The HTTP closer answers any Host header with the same static page,
   `Connection: close` after every response.
 
-## Development Notes
+## Project-specific overrides
 
-- Identity strings are env-driven; never hardcode `honeycow.net`, an
-  abuse address, or a VPS IP in source. Tests rely on the test-time
-  defaults set in `tests/conftest.py`.
-- The exemption list is hot-reloadable via `kill -HUP 1` inside the
-  container; parse failures keep the previous list in effect.
-- Update `docs/architecture.md` when changing wire behavior or the
-  dispatch table.
-- Keep `README.md` and `CLAUDE.md` short. Operational detail in
-  `docs/deployment.md`; design detail in `docs/architecture.md`.
-- This is the gleefully-incorrect sibling. Keep chaoscow's narrow
-  RFC-polite identity separate — do not bleed honeycow patterns into
-  it.
+- venv path is `./venv` (matches the global default; explicit because
+  the Makefile references `venv/bin/*` paths directly).
+- Identity strings come from `.env` (gitignored); see `.env.example`
+  for what to set.

@@ -30,6 +30,47 @@ _FALLBACK_BODY = (
     "</body></html>"
 )
 
+# Placeholder substituted with the client IP per-request. Lives in the
+# static index.html so the cowsay footer can show the visitor their own IP.
+_CLIENT_IP_PLACEHOLDER = "{client_ip}"
+_COWSAY_PLACEHOLDER = "{cowsay_block}"
+
+
+def _cowsay(lines: list[str]) -> str:
+    """Render a tiny two-or-more-line cowsay bubble with the canonical cow.
+
+    Not a full cowsay implementation — honeycow only ever feeds it a
+    2-line message (welcome + client IP), so we render the multi-line
+    bubble form (top/bottom corners are /\\ and \\/ respectively, no
+    middle `|` rows since we never have 3+ lines).
+    """
+    if len(lines) < 2:
+        lines = lines + [""] * (2 - len(lines))
+    width = max(len(line) for line in lines)
+    top = " " + "_" * (width + 2)
+    bottom = " " + "-" * (width + 2)
+    out = [top]
+    out.append(f"/ {lines[0].ljust(width)} \\")
+    for mid in lines[1:-1]:
+        out.append(f"| {mid.ljust(width)} |")
+    out.append(f"\\ {lines[-1].ljust(width)} /")
+    out.append(bottom)
+    out.append(r"        \   ^__^")
+    out.append(r"         \  (oo)\_______")
+    out.append(r"            (__)\       )\/\ ")
+    out.append(r"                ||----w |")
+    out.append(r"                ||     ||")
+    return "\n".join(out)
+
+
+def render_body(template: bytes, client_ip: str) -> bytes:
+    """Substitute the cowsay block + client IP into the page template."""
+    cowsay = _cowsay(["Welcome to the pasture!", client_ip])
+    rendered = template.decode("utf-8", errors="replace")
+    rendered = rendered.replace(_COWSAY_PLACEHOLDER, cowsay)
+    rendered = rendered.replace(_CLIENT_IP_PLACEHOLDER, client_ip)
+    return rendered.encode("utf-8")
+
 # How many request bytes to read before giving up. We only need the request
 # line + headers to log; the body is irrelevant.
 _HTTP_READ_MAX = 8192
@@ -111,9 +152,12 @@ def _resolve_client_ip(peer_ip: str, xff: str) -> str:
 
 class HTTPCloser:
     def __init__(self, body: bytes, log_path: Path) -> None:
-        self.body = body
+        # `body` is the page template containing {cowsay_block} and
+        # {client_ip} placeholders. The rendered response varies per
+        # request (each visitor sees their own IP in the cowsay footer),
+        # so we don't pre-build a single response anymore.
+        self.body_template = body
         self.log_path = log_path
-        self._response = self._build_response(body)
 
     @staticmethod
     def _build_response(body: bytes) -> bytes:
@@ -139,6 +183,7 @@ class HTTPCloser:
         start = time.monotonic()
 
         request_data = b""
+        response = b""
         try:
             try:
                 request_data = await asyncio.wait_for(
@@ -148,8 +193,15 @@ class HTTPCloser:
             except (TimeoutError, OSError):
                 pass
 
+            # Parse request + resolve client IP BEFORE writing the
+            # response — the cowsay footer needs the client IP.
+            method, path, host, ua, xff = _parse_request(request_data)
+            client_ip = _resolve_client_ip(src_ip, xff)
+            body = render_body(self.body_template, client_ip)
+            response = self._build_response(body)
+
             try:
-                writer.write(self._response)
+                writer.write(response)
                 await writer.drain()
             except OSError:
                 pass
@@ -160,8 +212,13 @@ class HTTPCloser:
             except OSError:
                 pass
 
-        method, path, host, ua, xff = _parse_request(request_data)
-        client_ip = _resolve_client_ip(src_ip, xff)
+        # Re-parse for the log line in the (unlikely) case rendering
+        # raised before assignment. This keeps logging robust even on
+        # exotic-encoding requests.
+        if not response:
+            method, path, host, ua, xff = _parse_request(request_data)
+            client_ip = _resolve_client_ip(src_ip, xff)
+
         honey_logging.write_jsonl(self.log_path, {
             "schema_version": honey_logging.SCHEMA_VERSION,
             "ts": honey_logging.now_iso(),
@@ -177,7 +234,7 @@ class HTTPCloser:
             "host": host,
             "user_agent": ua,
             "request_bytes": len(request_data),
-            "response_bytes": len(self._response),
+            "response_bytes": len(response),
             "elapsed_ms": round((time.monotonic() - start) * 1000, 3),
         })
 

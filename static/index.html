@@ -4,38 +4,129 @@
   <meta charset="utf-8">
   <title>honeycow</title>
   <style>
-    body { font-family: -apple-system, system-ui, sans-serif; max-width: 38em; margin: 4em auto; padding: 0 1em; line-height: 1.5; color: #222; }
+    body {
+      font-family: -apple-system, system-ui, sans-serif;
+      max-width: 44em;
+      margin: 4em auto;
+      padding: 0 1em;
+      line-height: 1.55;
+      color: #222;
+    }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
     code { background: #f3f3f3; padding: 0.1em 0.3em; border-radius: 3px; }
-    h1 { letter-spacing: -0.02em; }
+    h1 { letter-spacing: -0.02em; margin-bottom: 0.2em; }
+    h2 { margin-top: 1.8em; }
+    .tag { color: #666; font-style: italic; margin-top: 0; }
     .small { color: #666; font-size: 0.9em; }
+    ul.observable li { margin-bottom: 0.35em; }
+    .pasture {
+      text-align: center;
+      margin: 3em 0 1em 0;
+      color: #555;
+    }
+    .pasture pre {
+      display: inline-block;
+      text-align: left;
+      font-size: 0.85em;
+      line-height: 1.15;
+      margin: 0;
+    }
   </style>
 </head>
 <body>
   <h1>honeycow</h1>
-  <p><em>this is not the cow you are looking for.</em></p>
+  <p class="tag">this is not the cow you are looking for.</p>
+
   <p>
     You reached this page because something on your network resolved a
     hostname whose DNS answer pointed at our IP, then connected to it
     over HTTP. Most often that means a scanner or misbehaving client
     queried this DNS server expecting a real authoritative response.
   </p>
+
   <p>
-    Honeycow is a deliberately incorrect DNS server &mdash; an NS squatter
-    that synthesizes plausible-looking answers for any name in any zone.
-    We do not own the domains we reply about. The IP your client connected
-    to is ours; the records that pointed it here are fabricated.
+    Honeycow is a deliberately incorrect DNS server &mdash; an NS
+    squatter that synthesizes plausible-looking answers for any name
+    in any zone. We do not own the domains we reply about. The IP
+    your client connected to is ours; the records that pointed it
+    here are fabricated.
   </p>
-  <h2>If you operate a zone that honeycow is squatting on</h2>
+
+  <h2>How honeycow is observably not an open resolver</h2>
   <p>
-    Email <a href="mailto:abuse@honeycow.net">abuse@honeycow.net</a> from a
-    contact tied to the zone you want exempted, and we will add it to the
-    block list. Future queries for that zone (and its subnames) will
-    return <code>REFUSED</code> instead of synthesized records.
+    If you arrived here from a Shadowserver / Censys / etc. report
+    flagging this IP as an open resolver, these are the wire-level
+    properties you can verify with <code>dig</code>:
   </p>
+  <ul class="observable">
+    <li>
+      <strong>Authoritative-claiming, not recursive.</strong> Every
+      response sets <code>AA=1</code> and clears <code>RA=0</code>
+      (recursion not available). Honeycow never forwards a query.
+    </li>
+    <li>
+      <strong>No EDNS.</strong> Responses omit the OPT pseudo-RR.
+      Clients advertising larger buffer sizes are ignored.
+    </li>
+    <li>
+      <strong>512-byte UDP cap with TC=1.</strong> Anything that
+      would exceed 512 bytes truncates with empty answer / authority
+      / additional sections, forcing TCP retry. Removes the
+      spoofed-UDP amplification path.
+    </li>
+    <li>
+      <strong>Per-source UDP rate limiting</strong> via token bucket.
+      Burst-tolerant; sustained source floods are dropped.
+    </li>
+    <li>
+      <strong>AXFR / IXFR &rarr; REFUSED</strong> in every case.
+    </li>
+    <li>
+      <strong>Reserved-zone refusal.</strong> Names defined by RFC
+      6761 / 2606 / 6303 / 4193 (<code>.localhost</code>,
+      <code>example.com</code>, the RFC 1918 reverse zones, etc.)
+      return REFUSED instead of synthesized records.
+    </li>
+    <li>
+      <strong>Research-scanner zones &rarr; REFUSED.</strong> Names
+      under <code>shadowserver.org</code>, <code>cybergreen.net</code>,
+      <code>internet-measurement.com</code>, <code>internet-census.org</code>,
+      and similar published research-scanner zones are exempt by design
+      &mdash; we don't want to falsely validate amplifier paths in their
+      open-resolver reports.
+    </li>
+  </ul>
+
+  <h2>If you operate a zone honeycow is squatting on</h2>
+  <p>
+    Email <a href="mailto:abuse@honeycow.net">abuse@honeycow.net</a>
+    from a contact tied to the zone you want exempted, and we will
+    add it to the block list. Future queries for that zone (and its
+    subnames) will return <code>REFUSED</code> instead of synthesized
+    records.
+  </p>
+
+  <h2>If you're a hosting provider abuse desk</h2>
+  <p>
+    The above wire-level properties are what distinguish honeycow
+    from a misconfigured open resolver. The mitigation we ship for
+    Shadowserver-style classifiers is the research-scanner exemption
+    list above; once it is in place, the next scan of this IP
+    returns REFUSED for <code>A dnsscan.shadowserver.org</code> and
+    we drop off the open-resolver report on the following cycle.
+    Please reach out at <a href="mailto:abuse@honeycow.net">abuse@honeycow.net</a>
+    if anything else looks off and we'll respond promptly with packet
+    captures if helpful.
+  </p>
+
   <p class="small">
     Operator: <a href="https://github.com/mclose">github.com/mclose</a>.
-    honeycow and its polite cousin chaoscow will be published there once
-    they're out of the cow pen.
+    honeycow and its polite cousin chaoscow will be published there
+    once they're out of the cow pen.
   </p>
+
+  <div class="pasture">
+<pre>{cowsay_block}</pre>
+  </div>
 </body>
 </html>

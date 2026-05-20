@@ -11,6 +11,7 @@ at startup; if unreadable, serves a minimal hard-coded fallback.
 from __future__ import annotations
 
 import asyncio
+import html
 import ipaddress
 import logging
 import time
@@ -64,11 +65,20 @@ def _cowsay(lines: list[str]) -> str:
 
 
 def render_body(template: bytes, client_ip: str) -> bytes:
-    """Substitute the cowsay block + client IP into the page template."""
-    cowsay = _cowsay(["Welcome to the pasture!", client_ip])
+    """Substitute the cowsay block + client IP into the page template.
+
+    `client_ip` is HTML-escaped before substitution. In production it's
+    always a numeric IP literal from `socket.getpeername()` (defended
+    further by the _resolve_client_ip XFF validation), but the escape
+    is defense-in-depth — it keeps the page safe if a future change
+    ever lets a non-numeric value reach this path or moves the
+    {client_ip} placeholder out of a <pre> block.
+    """
+    safe_ip = html.escape(client_ip, quote=True)
+    cowsay = _cowsay(["Welcome to the pasture!", safe_ip])
     rendered = template.decode("utf-8", errors="replace")
     rendered = rendered.replace(_COWSAY_PLACEHOLDER, cowsay)
-    rendered = rendered.replace(_CLIENT_IP_PLACEHOLDER, client_ip)
+    rendered = rendered.replace(_CLIENT_IP_PLACEHOLDER, safe_ip)
     return rendered.encode("utf-8")
 
 # How many request bytes to read before giving up. We only need the request
@@ -90,6 +100,14 @@ def _parse_request(data: bytes) -> tuple[str, str, str, str, str]:
 
     All fields are best-effort and never raise — the closer logs whatever
     it can see and serves the same body either way.
+
+    Extracted values are sanitized: control characters are stripped and
+    each field is truncated to a sane maximum. The JSONL log encodes
+    quotes/newlines safely, but downstream tools (morning_report.py)
+    print these strings directly to operators' terminals — bare ANSI
+    escape sequences or control characters in a User-Agent could
+    redraw the terminal or hide content. Stripping them at the edge
+    keeps every consumer safe.
     """
     method = path = host = ua = xff = ""
     try:
@@ -113,7 +131,19 @@ def _parse_request(data: bytes) -> tuple[str, str, str, str, str]:
                 xff = value
     except Exception:  # pragma: no cover — pure best-effort
         pass
-    return method, path, host, ua, xff
+    return (
+        _sanitize_header_value(method, max_len=16),
+        _sanitize_header_value(path, max_len=512),
+        _sanitize_header_value(host, max_len=256),
+        _sanitize_header_value(ua, max_len=512),
+        _sanitize_header_value(xff, max_len=256),
+    )
+
+
+def _sanitize_header_value(value: str, max_len: int) -> str:
+    """Strip control characters and truncate. Tab is kept (whitespace)."""
+    cleaned = "".join(c for c in value if c == "\t" or c >= " ")
+    return cleaned[:max_len]
 
 
 def _is_trusted_proxy(ip: str) -> bool:

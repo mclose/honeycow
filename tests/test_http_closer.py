@@ -104,3 +104,50 @@ def test_render_body_substitutes_cowsay_and_client_ip():
     assert b"^__^" in rendered
     assert b"{client_ip}" not in rendered
     assert b"{cowsay_block}" not in rendered
+
+
+def test_render_body_html_escapes_client_ip():
+    """Defense-in-depth: if client_ip ever carries HTML-meaningful chars,
+    they must not appear unescaped in the rendered output."""
+    template = b"<html><body><p>{client_ip}</p></body></html>"
+    rendered = honey_http.render_body(template, "<script>alert(1)</script>")
+    assert b"<script>alert(1)</script>" not in rendered
+    assert b"&lt;script&gt;alert(1)&lt;/script&gt;" in rendered
+
+
+# --- header sanitization -------------------------------------------------
+
+def test_parse_request_strips_control_chars_from_header_values():
+    """Bare \\n or ANSI escape sequences in a User-Agent must not survive
+    parse — they'd otherwise reach operator terminals via tools that print
+    log values directly."""
+    raw = (
+        b"GET / HTTP/1.1\r\n"
+        b"Host: scanner.test\r\n"
+        b"User-Agent: curl/8 \x1b[31mRED\x1b[0m\x07\r\n"
+        b"\r\n"
+    )
+    _, _, _, ua, _ = _parse_request(raw)
+    assert "\x1b" not in ua
+    assert "\x07" not in ua
+    assert "curl/8" in ua
+    assert "RED" in ua  # actual text survives; only the escapes go
+
+
+def test_parse_request_truncates_overlong_fields():
+    """Pathologically long header values get truncated to the documented cap."""
+    long_ua = "A" * 2000
+    raw = (
+        b"GET / HTTP/1.1\r\n"
+        b"Host: x\r\n"
+        b"User-Agent: " + long_ua.encode() + b"\r\n"
+        b"\r\n"
+    )
+    _, _, _, ua, _ = _parse_request(raw)
+    assert len(ua) == 512  # max_len for user-agent
+    assert ua == "A" * 512
+
+
+def test_sanitize_header_value_preserves_tab():
+    """Tabs are whitespace and survive sanitization."""
+    assert honey_http._sanitize_header_value("a\tb", max_len=100) == "a\tb"

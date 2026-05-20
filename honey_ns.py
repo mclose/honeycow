@@ -18,6 +18,7 @@ Run directly for local testing:
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 import os
 import signal
@@ -53,6 +54,11 @@ DEFAULT_TCP_ACCEPT_BACKLOG = 100
 DEFAULT_TCP_MAX_QUERIES_PER_CONN = 32
 DEFAULT_UDP_RATELIMIT_RATE = 200.0
 DEFAULT_UDP_RATELIMIT_BURST = 400
+# Hard cap on the per-source bucket dict. Without this, spoofed-source
+# floods can grow the dict unboundedly until the container's mem_limit
+# kicks in. 65536 covers any realistic scanner population by orders of
+# magnitude while bounding worst-case memory to ~1.5 MB.
+DEFAULT_UDP_RATELIMIT_MAX_KEYS = 65536
 TCP_LENGTH_PREFIX = 2
 TCP_QUERY_MAX_BYTES = 4096
 UDP_MAX = base.UDP_MAX
@@ -178,26 +184,52 @@ def handle_wire(data: bytes, transport: str) -> tuple[
 # ---------------------------------------------------------------------------
 
 class TokenBucketRateLimiter:
-    """Small in-process token bucket keyed by source IP and response class."""
+    """Small in-process token bucket keyed by source IP and response class.
 
-    def __init__(self, rate: float, burst: int, enabled: bool = True) -> None:
+    The bucket dict is bounded with an LRU cap. Honeycow's whole threat
+    model is spoofed-source UDP traffic; an attacker can otherwise grow
+    the unbounded dict to whatever the container's `mem_limit` allows,
+    OOM-killing the process and triggering a restart loop. Eviction is
+    LRU — sources we haven't seen in a while go first.
+    """
+
+    def __init__(
+        self, rate: float, burst: int, enabled: bool = True,
+        max_keys: int = DEFAULT_UDP_RATELIMIT_MAX_KEYS,
+    ) -> None:
         self.rate = rate
         self.burst = burst
         self.enabled = enabled
-        self._buckets: dict[tuple[str, str], tuple[float, float]] = {}
+        self.max_keys = max_keys
+        # OrderedDict for O(1) LRU: move_to_end on touch, popitem(last=False)
+        # to evict the least-recently-used key.
+        self._buckets: collections.OrderedDict[tuple[str, str], tuple[float, float]] = (
+            collections.OrderedDict()
+        )
 
     def allow(self, src_ip: str, response_class: str) -> bool:
         if not self.enabled or self.rate <= 0 or self.burst <= 0:
             return True
         now = time.monotonic()
         key = (src_ip, response_class)
-        tokens, updated = self._buckets.get(key, (float(self.burst), now))
+        existing = self._buckets.get(key)
+        if existing is None:
+            tokens, updated = float(self.burst), now
+        else:
+            tokens, updated = existing
+            self._buckets.move_to_end(key)
         tokens = min(float(self.burst), tokens + (now - updated) * self.rate)
         if tokens < 1:
             self._buckets[key] = (tokens, now)
+            self._evict_if_needed()
             return False
         self._buckets[key] = (tokens - 1, now)
+        self._evict_if_needed()
         return True
+
+    def _evict_if_needed(self) -> None:
+        while len(self._buckets) > self.max_keys:
+            self._buckets.popitem(last=False)
 
 
 class UDPProtocol(asyncio.DatagramProtocol):

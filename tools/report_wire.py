@@ -55,12 +55,18 @@ def fetch_events(remote: str | None, since: datetime) -> list[dict]:
 
 
 def fetch_zeek_dns(remote: str | None, since: datetime) -> list[dict]:
-    """Pull Zeek dns.log entries (JSON mode) within the window."""
-    # Zeek rotates hourly; concatenate today's + yesterday's dns.log.
+    """Pull Zeek dns.log entries (JSON mode) within the window.
+
+    Zeek's `local` script writes to /zeek/logs/dns.log (current) and on
+    rotation moves to /zeek/logs/YYYY-MM-DD/dns.HH:MM:SS-HH:MM:SS.log.gz.
+    Reading both gives us a full window even across an hourly roll.
+    """
     cmd = [
         "docker", "exec", "honeycow-zeek", "sh", "-c",
-        "cat /zeek/logs/dns.log 2>/dev/null; "
-        "for f in /zeek/logs/*/dns.*.log.gz; do [ -e \"$f\" ] && zcat \"$f\"; done",
+        "set -e; "
+        "if [ -f /zeek/logs/dns.log ]; then cat /zeek/logs/dns.log; fi; "
+        "find /zeek/logs -name 'dns.*.log.gz' -print0 2>/dev/null "
+        "  | xargs -0 -r zcat",
     ]
     if remote:
         cmd = ["ssh", remote, *cmd]

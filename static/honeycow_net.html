@@ -132,6 +132,21 @@
         in every case.</li>
     </ul>
 
+    <h3>Verify it yourself</h3>
+    <p>You can confirm AA=1, RA=0, and TC=1 in one <code>dig</code>
+      against honeycow.net. The qname below is a 240-character literal
+      of repeating moos &mdash; no shell expansion, no piped commands,
+      just a name long enough to push the response over 512 bytes.</p>
+<pre>dig +ignore @honeycow.net TXT \
+  Mooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo.Mooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo.Mooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo.Mooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo.tld</pre>
+    <p>The response header should read
+      <code>flags: qr aa tc rd</code> (AA=1, TC=1, RA absent), with
+      <code>ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 0</code>, and
+      <code>dig</code>'s explicit
+      <code>recursion requested but not available</code> warning.
+      <code>+ignore</code> tells <code>dig</code> not to retry over TCP
+      after seeing TC=1, so the truncated response stays visible.</p>
+
     <h2>What we refuse</h2>
     <p>Three categories of name return <code>REFUSED</code> instead of a
       synthesized answer:</p>

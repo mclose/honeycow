@@ -36,7 +36,8 @@ HOURS  ?= 24
 # Smoke-test target.
 HOST ?= 127.0.0.1
 
-.PHONY: help venv install hooks fmt lint check test e2e smoke tire-kick run \
+.PHONY: help venv install hooks fmt lint check test e2e smoke tire-kick \
+        prove-tc1 run \
         build up down restart rebuild logs events-tail shell status \
         up-prod down-prod logs-prod \
         logs-wire report-wire \
@@ -178,6 +179,19 @@ gh-release:  ## Create GitHub release for current tag
 tire-kick:  ## End-to-end probe + log-correlation test (HOST4=, HOST6=, REMOTE=)
 	HOST4=$${HOST4:-$(HOST)} HOST6=$${HOST6:-} REMOTE=$${REMOTE:-} \
 		bash tests/tire_kick.sh
+
+# Demonstrates honeycow's three anti-amplification flags (AA=1, RA=0, TC=1)
+# in one dig exchange. The qname is hard-coded as a literal so nobody
+# reading the command has to trust any shell expansion. The cow is
+# obligatory — every label is a 60-char "M + 59 o's" moo.
+PROVE_TC1_QNAME := Mooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo.Mooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo.Mooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo.Mooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo.tld
+
+prove-tc1:  ## Demonstrate AA=1 / RA=0 / TC=1 in one dig (HOST=<ip>)
+	@echo "Querying @$(HOST) TXT with a long qname to force >512B response."
+	@echo "Expect: flags qr aa tc rd, empty ANSWER/AUTHORITY/ADDITIONAL,"
+	@echo "        plus dig's 'recursion requested but not available' note."
+	@echo
+	@dig +ignore +tries=1 +time=3 @$(HOST) TXT $(PROVE_TC1_QNAME)
 
 smoke:  ## Post-deploy sanity check (HOST=<vps-ipv4>)
 	@echo "SOA arbitrary.example @ $(HOST):53"

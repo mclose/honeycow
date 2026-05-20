@@ -146,8 +146,10 @@ services:
     read_only: true
     cap_drop:
       - ALL
+    # NET_RAW alone is sufficient for AF_PACKET passive capture on
+    # modern Linux. NET_ADMIN would let the container alter routes /
+    # iptables / interface state — not needed for sniffing.
     cap_add:
-      - NET_ADMIN
       - NET_RAW
     command:
       - -i
@@ -174,8 +176,9 @@ services:
     network_mode: host
     cap_drop:
       - ALL
+    # NET_RAW alone is sufficient for passive AF_PACKET capture (same
+    # reasoning as the tcpdump sidecar above).
     cap_add:
-      - NET_ADMIN
       - NET_RAW
     working_dir: /zeek/logs
     # -C ignores invalid TCP/UDP checksums. Required because cloud NICs

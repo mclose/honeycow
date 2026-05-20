@@ -86,20 +86,52 @@
 
     <h2>What you saw</h2>
     <p>The DNS server you queried claimed to be authoritative for a name
-      it has no real business answering for. It returned a synthesized
-      response pointing every <code>A</code> / <code>AAAA</code> at this
-      same server, plus an <code>NS</code> rrset, an <code>SOA</code>, and
-      a <code>TXT</code> calling card.</p>
+      it has no real business answering for. For most names it returned
+      a synthesized response pointing every <code>A</code> /
+      <code>AAAA</code> at this same server, plus an <code>NS</code>
+      rrset, an <code>SOA</code>, and a <code>TXT</code> calling card.</p>
     <p>That was on purpose. It's a research / observation tool — a sibling
       of <em>chaoscow</em>, which is the polite, single-zone version. This
       one (honeycow) is gleefully authoritative for every zone except a
-      small exemption list, and it logs whoever asked.</p>
+      few categories of name we explicitly refuse (see below), and it
+      logs whoever asked.</p>
 
     <h2>What it isn't</h2>
     <p>It isn't a phishing landing page, a credential trap, or anything
       trying to deliver content to you. The HTTP closer page is the only
       thing you'd ever get from this server, and it's the same page no
       matter what name you came in on.</p>
+    <p>It also isn't an open resolver. The wire-level differences are
+      observable with <code>dig</code>:</p>
+    <ul>
+      <li><strong>Authoritative-claiming, not recursive.</strong> Every
+        response sets <code>AA=1</code> and clears <code>RA=0</code>.
+        Honeycow never forwards a query.</li>
+      <li><strong>No EDNS.</strong> Responses omit the OPT pseudo-RR.</li>
+      <li><strong>512-byte UDP cap with <code>TC=1</code>.</strong>
+        Oversized answers truncate, forcing TCP retry. Removes the
+        spoofed-UDP amplification path.</li>
+      <li><strong>Per-source UDP rate limiting</strong> (token bucket).</li>
+      <li><strong>AXFR / IXFR &rarr; <code>REFUSED</code></strong>
+        in every case.</li>
+    </ul>
+
+    <h2>What we refuse</h2>
+    <p>Three categories of name return <code>REFUSED</code> instead of a
+      synthesized answer:</p>
+    <ul>
+      <li><strong>Operator-requested exemptions.</strong> Zones whose
+        operators have asked us to stop squatting on them (see below).</li>
+      <li><strong>RFC reserved names.</strong> <code>.localhost</code>,
+        <code>example.com</code>, the RFC 1918 reverse zones, etc., per
+        RFC 6761 / 2606 / 6303 / 4193 — names defined never to resolve
+        to a public authoritative answer.</li>
+      <li><strong>Research-scanner zones.</strong> Names under
+        <code>shadowserver.org</code>, <code>cybergreen.net</code>,
+        <code>internet-measurement.com</code>, and similar published
+        scanner-research zones. We don't want to falsely validate
+        amplifier paths in their open-resolver reports.</li>
+    </ul>
 
     <h2>Something looks wrong</h2>
     <p>If a name that should be live is resolving through here, or you'd
@@ -108,6 +140,12 @@
       <a href="mailto:abuse@honeycow.net">abuse@honeycow.net</a> with the
       query name, the timestamp, and a packet capture if you have one. A
       human reads it.</p>
+    <p>If you're a hosting-provider abuse desk that arrived here via a
+      Shadowserver-style report, the wire-level behavior above is what
+      distinguishes honeycow from a misconfigured open resolver, and the
+      research-scanner exemption list is the mitigation we ship to drop
+      off open-resolver reports on the next scan cycle. Reach out at the
+      same address and we'll respond promptly.</p>
 
     <hr>
 

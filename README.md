@@ -62,9 +62,11 @@ make smoke HOST=127.0.0.1
 | `make test` | Run unit tests. |
 | `make lint` | Run Ruff checks. |
 | `make smoke HOST=...` | Probe a live deployment on port 53. |
+| `make tire-kick HOST4= HOST6= REMOTE=` | End-to-end probe + log-correlation harness (14 probes across v4/v6 × UDP/TCP × bluff/REFUSED/CHAOS, HTTP closer, HTTPS explainer). |
+| `make prove-tc1 HOST=...` | Demonstrate AA=1 / RA=0 / TC=1 in one dig — useful for reproducing the wire-level claims to an abuse desk. |
 | `make build` | Build the Docker image. |
 | `make up` | Start the Compose service (dev: binds 0.0.0.0/::). |
-| `make up-prod` | Start the prod stack (caddy + acme + host-IP bindings). |
+| `make up-prod` | Start the prod stack (caddy + acme + host-IP bindings + wire-monitoring sidecars). |
 | `make logs` | Tail compose logs. |
 | `make events-tail` | Tail the JSONL event log inside the container. |
 

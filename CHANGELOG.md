@@ -5,6 +5,90 @@ All notable changes to HoneyCow are noted here. Format follows
 
 ## [Unreleased]
 
+Continuation of 2026-05-20's iteration after the [0.10.0] tag. Driven
+mostly by polish + abuse-defensibility hardening that surfaced from
+landing the public-repo flip and closing DigitalOcean ticket #12245819
+("matter resolved" via Security Operations the same day).
+
+### Added
+
+- **Outbound byte budget circuit breaker** (`squatter/budget.py`). Hard
+  cap on total response bytes over a rolling 60-min window (100 MB /
+  3600s by default; env-tunable via `HONEY_OUTBOUND_BUDGET_BYTES` and
+  `HONEY_OUTBOUND_BUDGET_WINDOW`). When exhausted: UDP gets TC=1 +
+  empty sections, TCP gets REFUSED, HTTP gets a tiny 503. Belt-and-
+  suspenders defense against amplification participation beyond the
+  per-source rate limiter; ~2000× headroom over normal traffic so
+  false-trip is essentially impossible.
+- **`make prove-tc1 HOST=...`** target + a "Verify yourself" section
+  on the closer page and a "Verify it yourself" section on the
+  honeycow.net explainer page. Both expose a single `dig +ignore`
+  command (with a literal moo-themed 240-char qname) that
+  demonstrates AA=1 / RA=0 / TC=1 in one wire exchange. The pages'
+  audience is abuse-desk reviewers and curious researchers who want
+  to reproduce the technical claim independently.
+- **Caddy templating on the honeycow.net explainer.** Enabled the
+  `templates` directive, added a `{{.RemoteIP}}` cowsay footer
+  matching the closer's, and an ISO-8601 render-time heartbeat
+  comment as a freshness marker.
+- **tire-kick coverage round 2** (`tests/tire_kick.sh`): three new
+  probes — v4 TCP IXFR REFUSED, v4 UDP MAILA meta-qtype FORMERR, v4
+  UDP HESIOD-class REFUSED. Tire-kick now exercises all six dispatch
+  arms (synth_a / synth_soa / exempt / refused_xfr / refused_class /
+  formerr_meta_qtype) plus the CHAOS bluff path, HTTP closer, and
+  HTTPS explainer — 14 probes total.
+- **Morning-report reflection-attempt section.** Surfaces query_drop
+  events with `src_port=53` and `DROPPED_QR` / `oversized_datagram`
+  reason as a first-class section: total response packets, distinct
+  reflector IPs, largest reflected response size, top reflectors.
+  Captures the "someone spoofed our IP and used some NS as a
+  reflector" signal that previously sat invisible in the JSONL.
+
+### Changed
+
+- **Reverted PR #12's first cut on the explainer cowsay**: sprig's
+  `max`/`len` return `int64`; Go-template's `printf "%-*s"` wants
+  `int`. Briefly 500'd honeycow.net on first deploy. Fixed via
+  explicit `int` casts on the width values.
+- **Caddy mount switched from single-file to directory bind**
+  (`./caddy/Caddyfile` → `./caddy/`). Same single-file inode-pinning
+  bug as we hit on `config/exemptions.txt` earlier; same fix.
+  CLAUDE.md gotcha updated to call out both occurrences.
+
+### Fixed
+
+- **Security audit MEDIUM findings** (`PR #15`):
+  - `TokenBucketRateLimiter._buckets` is now LRU-capped at 65536
+    entries (default). Without the cap, spoofed-source UDP floods
+    could grow the dict until the container's `mem_limit` killed
+    the process and triggered a restart loop. The cap is the
+    application-side companion to the outbound-byte-budget cap above.
+  - `render_body` now `html.escape()`s `client_ip` before
+    substitution. Defense-in-depth before the closer page went
+    public; today the value is always a numeric IP literal, but the
+    escape future-proofs the templating against any future change
+    that lets a non-numeric value reach the path.
+  - `_parse_request` strips control characters from header values
+    and truncates each to a sane max. The JSONL encoder already
+    handles this safely, but `morning_report.py` prints header
+    values directly to operator terminals — bare ANSI escapes could
+    redraw the terminal or hide content.
+  - tcpdump + Zeek sidecars dropped `NET_ADMIN`; `NET_RAW` alone is
+    sufficient for passive `AF_PACKET` capture.
+
+### Repository
+
+- **`mclose/honeycow` flipped public** with MIT LICENSE, CI badge,
+  branch protection (PR required, CI must pass), two-remote deploy
+  (origin + prod bare repo), 21 merged PRs of debugging-arc history.
+- **PTR records set** for both v4 (`142.93.181.53`) and v6
+  (`2604:a880:800:14:0:2:f83c:0`) pointing at `honeycow.net`.
+  FCrDNS-aligned in both directions.
+- **DigitalOcean ticket #12245819 resolved** via Security Operations
+  the same day (~12h round-trip from send). Technical mitigation +
+  factual framing + probe-log proof was the recipe; no legal-policy
+  routing.
+
 ## [0.10.0] — 2026-05-20
 
 First substantive iteration past the initial implementation. Driven by

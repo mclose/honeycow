@@ -159,6 +159,9 @@ Q_V6_TCP_BLUFF="kick-${NONCE}-v6t-bluff.tld"
 Q_V4_UDP_EXEMPT="kick-${NONCE}-v4u-exempt.dnsscan.shadowserver.org"
 Q_V4_UDP_RESERVED="kick-${NONCE}-v4u-reserved.example.com"
 Q_V4_TCP_AXFR="kick-${NONCE}-v4t-axfr.tld"
+Q_V4_TCP_IXFR="kick-${NONCE}-v4t-ixfr.tld"
+Q_V4_UDP_META="kick-${NONCE}-v4u-meta.tld"
+Q_V4_UDP_HESIOD="kick-${NONCE}-v4u-hesiod.tld"
 Q_V4_UDP_SOA="kick-${NONCE}-v4u-soa.tld"
 HTTP_HOST="kick-${NONCE}.tire-kick.invalid"
 HTTP_BODY="$(mktemp -t tire-kick-closer.XXXXXX)"
@@ -194,6 +197,22 @@ echo "  v4 UDP reserved:     $Q_V4_UDP_RESERVED"
 
 $DIG_BASE @"$HOST4" +tcp +short AXFR "$Q_V4_TCP_AXFR" > /dev/null || true
 echo "  v4 TCP AXFR:         $Q_V4_TCP_AXFR"
+
+# IXFR shares the refused_xfr dispatch arm with AXFR — test it
+# independently so a future refactor that splits the arm doesn't
+# silently regress IXFR.
+$DIG_BASE @"$HOST4" +tcp +short ixfr=0 "$Q_V4_TCP_IXFR" > /dev/null || true
+echo "  v4 TCP IXFR:         $Q_V4_TCP_IXFR"
+
+# Meta-qtype FORMERR. MAILA (254) is officially obsolete but is one of
+# the meta types dispatch refuses with FORMERR per RFC 6895.
+$DIG_BASE @"$HOST4" +short -t MAILA "$Q_V4_UDP_META" > /dev/null || true
+echo "  v4 UDP meta MAILA:   $Q_V4_UDP_META"
+
+# Non-IN, non-CH class → REFUSED via refused_class arm. CHAOS is the
+# bluffed exception; HESIOD (class 4) tests the actual refusal path.
+$DIG_BASE @"$HOST4" +short -c HS A "$Q_V4_UDP_HESIOD" > /dev/null || true
+echo "  v4 UDP class HS:     $Q_V4_UDP_HESIOD"
 
 $DIG_BASE @"$HOST4" +short SOA "$Q_V4_UDP_SOA" > /dev/null || true
 echo "  v4 UDP SOA:          $Q_V4_UDP_SOA"
@@ -256,6 +275,15 @@ check_dns "v4 UDP reserved" ".qname==\"${Q_V4_UDP_RESERVED}.\"" \
 
 check_dns "v4 TCP AXFR" ".qname==\"${Q_V4_TCP_AXFR}.\" and .qtype_name==\"AXFR\"" \
     "refused_xfr" "REFUSED" "v4"
+
+check_dns "v4 TCP IXFR" ".qname==\"${Q_V4_TCP_IXFR}.\" and .qtype_name==\"IXFR\"" \
+    "refused_xfr" "REFUSED" "v4"
+
+check_dns "v4 UDP meta MAILA" ".qname==\"${Q_V4_UDP_META}.\" and .qtype_name==\"MAILA\"" \
+    "formerr_meta_qtype" "FORMERR" "v4"
+
+check_dns "v4 UDP class HS" ".qname==\"${Q_V4_UDP_HESIOD}.\" and .qclass_name==\"HS\"" \
+    "refused_class" "REFUSED" "v4"
 
 check_dns "v4 UDP SOA"    ".qname==\"${Q_V4_UDP_SOA}.\" and .qtype_name==\"SOA\"" \
     "synth_soa" "NOERROR" "v4"

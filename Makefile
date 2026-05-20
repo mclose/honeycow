@@ -36,7 +36,7 @@ HOURS  ?= 24
 # Smoke-test target.
 HOST ?= 127.0.0.1
 
-.PHONY: help venv install hooks fmt lint check test e2e smoke run \
+.PHONY: help venv install hooks fmt lint check test e2e smoke tire-kick run \
         build up down restart rebuild logs events-tail shell status \
         up-prod down-prod logs-prod \
         deploy setup-remote _sandbox_check \
@@ -158,6 +158,10 @@ gh-release:  ## Create GitHub release for current tag
 	gh release create v$(VERSION) --title "v$(VERSION)" --generate-notes
 
 # ---- analysis ------------------------------------------------------------
+
+tire-kick:  ## End-to-end probe + log-correlation test (HOST4=, HOST6=, REMOTE=)
+	HOST4=$${HOST4:-$(HOST)} HOST6=$${HOST6:-} REMOTE=$${REMOTE:-} \
+		bash tests/tire_kick.sh
 
 smoke:  ## Post-deploy sanity check (HOST=<vps-ipv4>)
 	@echo "SOA arbitrary.example @ $(HOST):53"

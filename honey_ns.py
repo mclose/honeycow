@@ -39,6 +39,7 @@ import dns.rdatatype
 import honey_http
 import honey_logging
 from squatter import base, dispatch
+from squatter.budget import OutboundBudget
 from squatter.exemptions import ExemptionList
 
 DEFAULT_PORT = 53
@@ -59,12 +60,22 @@ DEFAULT_UDP_RATELIMIT_BURST = 400
 # kicks in. 65536 covers any realistic scanner population by orders of
 # magnitude while bounding worst-case memory to ~1.5 MB.
 DEFAULT_UDP_RATELIMIT_MAX_KEYS = 65536
+# Outbound byte budget over a rolling window. Belt-and-suspenders cap
+# on amplification participation — even if every other defense fails,
+# the box can't sustain >100 MB/hour of outbound. At normal traffic
+# (~few MB/day) the headroom is ~2000x.
+DEFAULT_OUTBOUND_BUDGET_BYTES = 100_000_000
+DEFAULT_OUTBOUND_BUDGET_WINDOW = 3600
 TCP_LENGTH_PREFIX = 2
 TCP_QUERY_MAX_BYTES = 4096
 UDP_MAX = base.UDP_MAX
 
 LOG_PATH: Path = Path(DEFAULT_LOG_PATH)
 EXEMPTIONS: ExemptionList = ExemptionList()
+OUTBOUND_BUDGET: OutboundBudget = OutboundBudget(
+    max_bytes=DEFAULT_OUTBOUND_BUDGET_BYTES,
+    window_seconds=DEFAULT_OUTBOUND_BUDGET_WINDOW,
+)
 
 log = logging.getLogger("honey_ns")
 
@@ -311,6 +322,20 @@ class UDPProtocol(asyncio.DatagramProtocol):
             ))
             return
 
+        # Outbound budget circuit breaker. If sending this response
+        # would exceed the rolling-window cap, swap to a minimal
+        # TC=1-truncated response (UDP-appropriate signaling: tell
+        # clients to retry over TCP, where they'll hit the same cap and
+        # get REFUSED). This is the last-resort cap on amplification
+        # participation even if every other defense fails.
+        if not OUTBOUND_BUDGET.try_charge(len(wire)):
+            response = base.tc_truncated(query)
+            wire, _ = _serialize(response, "udp")
+            OUTBOUND_BUDGET.force_charge(len(wire))
+            kind = dns.rcode.to_text(response.rcode())
+            truncated = True
+            handler = "budget_exhausted"
+
         elapsed_ms = (time.monotonic() - start) * 1000
         assert self.transport is not None
         self.transport.sendto(wire, addr)
@@ -433,6 +458,17 @@ async def handle_tcp(
                 ))
                 return
 
+            # Outbound budget circuit breaker for TCP. TC=1 is
+            # meaningless over TCP (no truncation/retry semantics);
+            # over budget we substitute REFUSED instead. The byte
+            # budget tracks the substitute response too.
+            if query is not None and not OUTBOUND_BUDGET.try_charge(len(wire)):
+                response = base.refused(query)
+                wire, _ = _serialize(response, "tcp")
+                OUTBOUND_BUDGET.force_charge(len(wire))
+                kind = dns.rcode.to_text(response.rcode())
+                handler = "budget_exhausted"
+
             try:
                 writer.write(len(wire).to_bytes(TCP_LENGTH_PREFIX, "big"))
                 writer.write(wire)
@@ -549,6 +585,7 @@ async def serve(
         try:
             http_servers = await honey_http.serve(
                 http_bind_v4, http_bind_v6, http_port, body, LOG_PATH,
+                budget=OUTBOUND_BUDGET,
             )
         except OSError as exc:
             log.warning("HTTP bind failed on port %d: %s", http_port, exc)
@@ -598,6 +635,12 @@ def _load_config() -> dict:
         "udp_ratelimit_burst": int(os.environ.get(
             "HONEY_UDP_RATELIMIT_BURST", DEFAULT_UDP_RATELIMIT_BURST,
         )),
+        "outbound_budget_bytes": int(os.environ.get(
+            "HONEY_OUTBOUND_BUDGET_BYTES", DEFAULT_OUTBOUND_BUDGET_BYTES,
+        )),
+        "outbound_budget_window": int(os.environ.get(
+            "HONEY_OUTBOUND_BUDGET_WINDOW", DEFAULT_OUTBOUND_BUDGET_WINDOW,
+        )),
         "log_path": os.environ.get("HONEY_LOG", DEFAULT_LOG_PATH),
         "exemption_path": os.environ.get(
             "HONEY_EXEMPTION_FILE", DEFAULT_EXEMPTION_PATH,
@@ -621,9 +664,18 @@ def main() -> int:
 
     cfg = _load_config()
 
-    global LOG_PATH, EXEMPTIONS
+    global LOG_PATH, EXEMPTIONS, OUTBOUND_BUDGET
     LOG_PATH = Path(cfg["log_path"])
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    OUTBOUND_BUDGET = OutboundBudget(
+        max_bytes=cfg["outbound_budget_bytes"],
+        window_seconds=cfg["outbound_budget_window"],
+    )
+    log.info(
+        "outbound budget: %d bytes per %ds window",
+        cfg["outbound_budget_bytes"], cfg["outbound_budget_window"],
+    )
 
     exemption_path = Path(cfg["exemption_path"])
     if exemption_path.is_file():

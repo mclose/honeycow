@@ -81,6 +81,16 @@ cert via DNS-01 over BIND nsupdate). All three are required.
   response. EDNS OPT records are intentionally omitted. Responses cap
   at 512 bytes with TC=1 to force TCP fallback rather than EDNS-style
   amplification.
+- **Outbound byte budget circuit breaker.** `OutboundBudget` (in
+  `squatter/budget.py`) caps total response bytes at 100 MB per rolling
+  60-min window (configurable via `HONEY_OUTBOUND_BUDGET_BYTES` /
+  `HONEY_OUTBOUND_BUDGET_WINDOW`). Belt-and-suspenders defense against
+  amplification participation: ~2000x normal traffic headroom, but if
+  ever exhausted, UDP responses become TC=1 + empty, TCP REFUSED,
+  HTTP 503. State is in-memory only; container restart resets the
+  budget. Charge applies to *what we actually emit* (including
+  substitutes), so a budget-exhausted burst can't be bypassed by
+  retrying.
 - **DigitalOcean / Shadowserver "open resolver" pipeline.** Shadowserver
   scans the v4 internet with `A dnsscan.shadowserver.org` and reports
   answerers to hosting providers. We REFUSE for known scanner-research

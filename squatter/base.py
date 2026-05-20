@@ -308,6 +308,22 @@ def formerr(query: dns.message.Message) -> dns.message.Message:
     return _error_response(query, dns.rcode.FORMERR)
 
 
+def tc_truncated(query: dns.message.Message) -> dns.message.Message:
+    """Minimal TC=1 response with empty answer/authority/additional.
+
+    Used when the outbound byte budget is exhausted (or any other
+    "tell the client to retry over TCP, but don't waste bytes" path).
+    Same shape as serialize_udp's overflow handler, factored out so
+    callers can construct it deliberately.
+    """
+    response = make_response(query)
+    response.flags |= dns.flags.TC
+    response.answer = []
+    response.authority = []
+    response.additional = []
+    return response
+
+
 # ---------------------------------------------------------------------------
 # Serialization
 # ---------------------------------------------------------------------------

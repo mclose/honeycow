@@ -31,8 +31,10 @@ scanner or browser
 | `squatter/base.py` | Identity constants, record synthesizers, response helpers, serialization limits. |
 | `squatter/dispatch.py` | Always-answer dispatch — exemption check, class check, AXFR/IXFR refusal, meta-qtype FORMERR, QTYPE switch. |
 | `squatter/exemptions.py` | Text-file loader, subdomain matching, SIGHUP reload. |
+| `squatter/budget.py` | Rolling-window outbound byte budget (circuit breaker on response volume). |
 | `tools/healthcheck.py` | Container DNS healthcheck (SOA against self). |
-| `static/index.html` | The HTTP closer page. |
+| `static/index.html` | The HTTP closer page (templated per-request with visitor IP). |
+| `static/honeycow_net.html` | Explainer page served by Caddy at https://honeycow.net/ (also templated). |
 
 ## DNS Behavior
 
@@ -89,7 +91,13 @@ same static body. `Connection: close` after every response.
   business emitting large RRsets in response to a single-question ANY.
 - Source IPs are logged for audit but not trusted for access control.
   IP-level blocking is the operator's job (UFW on the VPS).
-- UDP rate limiting is keyed by source IP and response class.
+- UDP rate limiting is keyed by source IP and response class. The
+  per-source bucket dict is LRU-capped at 65536 keys to bound memory
+  under spoofed-source floods (the dominant threat).
+- Outbound byte budget over a rolling 60-min window (`squatter/budget.py`).
+  When the cap is reached, UDP responses substitute to TC=1 with empty
+  sections, TCP to REFUSED, HTTP to a tiny 503. This is the last-resort
+  cap on amplification participation even if every other defense fails.
 - Docker runs with a read-only filesystem, no-new-privileges, dropped
   capabilities except `NET_BIND_SERVICE`, and bounded process/memory
   limits.

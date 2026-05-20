@@ -197,6 +197,40 @@ def render(events: list[dict], ufw: list[dict], cert_issued: datetime | None) ->
     v4u, v6u, unku = bucket_v4_v6(ufw_ips)
     print(f"  UFW blocked  — v4: {v4u}  v6: {v6u}  other: {unku}")
 
+    # --- reflection-attempt traffic ---
+    # query_drop events with src_port=53 and DROPPED_QR / oversized_datagram
+    # mean: an attacker spoofed honeycow's IP as the source, sent a query
+    # to some authoritative NS, and that NS sent its response to us. The
+    # NS source IP is the *reflector* (often unwitting); honeycow is the
+    # spoofed victim. This is high-signal forensic data — it's literally
+    # somebody else's reflection-amplification mapping scan caught in the
+    # act, with our IP as the target. Honeycow drops these correctly
+    # (QR bit set / >512 bytes), but the *fact that they arrived* is what
+    # we want to see.
+    section("reflection-attempt traffic (someone spoofed our IP as victim)")
+    reflections = [
+        e for e in drops
+        if e.get("src_port") == 53
+        and e.get("drop_reason") in ("DROPPED_QR", "oversized_datagram")
+    ]
+    if not reflections:
+        print("  (none in window)")
+    else:
+        reflectors = collections.Counter(e["src_ip"] for e in reflections)
+        oversized = collections.Counter(
+            e["src_ip"] for e in reflections
+            if e.get("drop_reason") == "oversized_datagram"
+        )
+        max_size = max((e.get("raw_len", 0) for e in reflections), default=0)
+        print(f"  total response packets: {len(reflections)}")
+        print(f"  distinct reflector IPs: {len(reflectors)}")
+        print(f"  largest reflected response: {max_size}B  "
+              f"({'amplification potential' if max_size > 512 else 'within UDP cap'})")
+        print("  top reflectors:")
+        for ip, n in reflectors.most_common(10):
+            osz = f"  ({oversized[ip]} oversized)" if oversized[ip] else ""
+            print(f"    {n:4d}  {ip}{osz}")
+
     # --- scanner fingerprint families ---
     section("DNS probe families")
     fam = collections.Counter(classify_query(e.get("qname", "")) for e in ext)

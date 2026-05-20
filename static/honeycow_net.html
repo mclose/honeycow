@@ -171,15 +171,18 @@
         there when it's ready for daylight.</p>
     </footer>
 
-    {{- /* cowsay footer — matches the closer page's per-visitor IP greeting. */ -}}
+    {{- /* cowsay footer — matches the closer page's per-visitor IP greeting.
+           `int` casts are required: sprig's max/len return int64 but
+           Go-template's printf "%-*s" wants int for the width arg. */ -}}
     {{- $ip := .RemoteIP -}}
     {{- $welcome := "Welcome to the pasture!" -}}
-    {{- $width := max (len $welcome) (len $ip) -}}
+    {{- $width := int (max (len $welcome) (len $ip)) -}}
+    {{- $bar := int (add $width 2) -}}
     <div class="pasture">
-<pre> {{ repeat (add $width 2) "_" }}
+<pre> {{ repeat $bar "_" }}
 / {{ printf "%-*s" $width $welcome }} \
 \ {{ printf "%-*s" $width $ip }} /
- {{ repeat (add $width 2) "-" }}
+ {{ repeat $bar "-" }}
         \   ^__^
          \  (oo)\_______
             (__)\       )\/\

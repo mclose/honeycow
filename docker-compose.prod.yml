@@ -105,7 +105,12 @@ services:
       - "80:80/tcp"
       - "443:443/tcp"
     volumes:
-      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Mount the directory, not the single file, so atomic-rename writes
+      # to the Caddyfile (rsync, editors, deploy hook) re-resolve via path
+      # rather than pinning to the original inode. Same trap as the
+      # config/exemptions.txt mount we fixed earlier — see CLAUDE.md
+      # gotchas.
+      - ./caddy:/etc/caddy:ro
       - ./static:/srv/honeycow:ro
       - caddy_data:/data
       - caddy_config:/config

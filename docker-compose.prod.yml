@@ -22,11 +22,10 @@ services:
       - "[${HONEY_PUBLIC_AAAA:?HONEY_PUBLIC_AAAA must be set in .env (empty value disables v6)}]:53:53/tcp"
       - "[${HONEY_PUBLIC_AAAA:?HONEY_PUBLIC_AAAA must be set in .env (empty value disables v6)}]:80:80/tcp"
 
-# Enable IPv6 on the default bridge so dockerd can NAT v6 traffic from the
-# host's public IPv6 into the container.
-networks:
-  default:
-    enable_ipv6: true
-    ipam:
-      config:
-        - subnet: fd00:beef:beef::/64
+# NOTE: An earlier version of this file declared `networks.default` with
+# `enable_ipv6: true` and a ULA subnet. That block was never effective in
+# practice — the morning report shows v6 UFW hits but zero v6 DNS queries
+# reaching honeycow — and it makes `compose up` fail when sibling stacks
+# (caddy, acme) hold endpoints on `honeycow_default`. v6 ingress is a real
+# bug worth fixing separately; for now we rely on host-IP port bindings
+# above and accept that v6 dial-ins from off-host may not route in.

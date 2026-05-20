@@ -1,5 +1,7 @@
 # HoneyCow
 
+[![ci](https://github.com/mclose/honeycow/actions/workflows/ci.yml/badge.svg)](https://github.com/mclose/honeycow/actions/workflows/ci.yml)
+
 > honeycow: this is not the cow you are looking for. a polite ns squatter.
 
 HoneyCow is a deliberately incorrect Python authoritative DNS server. It
@@ -99,3 +101,7 @@ so committed source contains only placeholders.
   smoke checks, and exemption workflow.
 - [Rationale](docs/rationale.md): why this exists and what it is and isn't.
 - [Agent context](CLAUDE.md): guidance for future LLM/code-agent sessions.
+
+## License
+
+[MIT](LICENSE).

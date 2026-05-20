@@ -35,7 +35,7 @@ def test_resolve_client_ip_trusts_xff_from_private_peer(peer):
     assert _resolve_client_ip(peer, "203.0.113.7") == "203.0.113.7"
 
 
-@pytest.mark.parametrize("peer", ["8.8.8.8", "2606:4700:4700::1111", "76.13.112.47"])
+@pytest.mark.parametrize("peer", ["8.8.8.8", "2606:4700:4700::1111", "9.9.9.9"])
 def test_resolve_client_ip_ignores_xff_from_public_peer(peer):
     # A direct hit on the closer (bypassing Caddy) must not let the client
     # rewrite their own logged IP via XFF.
@@ -81,7 +81,7 @@ def test_cowsay_two_lines_pads_to_max_width():
 
 
 def test_cowsay_widens_for_long_ipv6():
-    long_ip = "2604:a880:800:14:0:2:f83c:0"  # 27 chars, longer than welcome
+    long_ip = "2001:db8:cafe:14:0:0:f83c:0"  # 27 chars, longer than welcome
     rendered = honey_http._cowsay(["Welcome to the pasture!", long_ip])
     lines = rendered.split("\n")
     # Width should now be 27 (IP line), not 23 (welcome line).

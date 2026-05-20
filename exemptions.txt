@@ -10,3 +10,30 @@
 # example.com
 # my-friend.org
 # secret.internal
+
+# --- Public internet-research scanners -------------------------------------
+# We REFUSE for these scanner-research zones rather than bluff-answer.
+# The queries are still fully logged (handler=exempt, response_kind=REFUSED)
+# and surfaced in the morning report's "research scanners" section. The
+# rationale is yin/yang: honeycow is the passive listener, these orgs are
+# the active scanners, and we don't want to falsely validate amplifier paths
+# in their open-resolver / open-service reports.
+
+# Shadowserver — probes `A dnsscan.shadowserver.org` against all of IPv4
+# and reports answerers to hosting providers as open DNS resolvers.
+shadowserver.org
+
+# CyberGreen / Cyber Resilience — open-service reporting program.
+cybergreen.net
+cyberresilience.io
+
+# Driftnet / Project25499 — DNS measurement scans, qnames under
+# *.dnscheck.internet-measurement.com
+internet-measurement.com
+
+# Internet Census — testip.internet-census.org probes.
+internet-census.org
+
+# NetScout ASERT — qnames containing asertdnsresearch.*
+asertdnsresearch.com
+asertdnsresearch.net

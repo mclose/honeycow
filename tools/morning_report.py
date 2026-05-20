@@ -66,6 +66,29 @@ def classify_query(qname: str) -> str:
     return "other"
 
 
+# Maps known scanner-research zones (suffix match on lowercased qname) to a
+# short org label. Kept in sync with exemptions.txt's research-scanner block.
+RESEARCH_SCANNER_SUFFIXES: tuple[tuple[str, str], ...] = (
+    (".shadowserver.org.", "shadowserver"),
+    (".cybergreen.net.", "cybergreen"),
+    (".cyberresilience.io.", "cyber-resilience"),
+    (".internet-measurement.com.", "driftnet/p25499"),
+    (".internet-census.org.", "internet-census"),
+    (".asertdnsresearch.com.", "asert-netscout"),
+    (".asertdnsresearch.net.", "asert-netscout"),
+)
+
+
+def classify_research_scanner(qname: str) -> str | None:
+    if not qname:
+        return None
+    low = qname.lower()
+    for suffix, label in RESEARCH_SCANNER_SUFFIXES:
+        if low == suffix.lstrip(".") or low.endswith(suffix):
+            return label
+    return None
+
+
 # ---- UFW log parser --------------------------------------------------------
 
 UFW_RE = re.compile(
@@ -179,6 +202,38 @@ def render(events: list[dict], ufw: list[dict], cert_issued: datetime | None) ->
     fam = collections.Counter(classify_query(e.get("qname", "")) for e in ext)
     for k, n in fam.most_common():
         print(f"  {n:4d}  {k}")
+
+    # --- research scanners: acknowledged + REFUSED via exemptions.txt ---
+    # We want these visible, not hidden, even though we REFUSE them at the
+    # wire. Honeycow is the passive listener; these orgs are the active
+    # scanners — both halves of the picture matter.
+    section("research scanners (REFUSED via exemptions, still observed)")
+    research = [
+        e for e in ext
+        if classify_research_scanner(e.get("qname", "")) is not None
+    ]
+    if not research:
+        print("  (none in window)")
+    else:
+        by_org: dict[str, list[dict]] = collections.defaultdict(list)
+        for e in research:
+            label = classify_research_scanner(e["qname"]) or "unknown"
+            by_org[label].append(e)
+        for org in sorted(by_org, key=lambda k: -len(by_org[k])):
+            org_events = by_org[org]
+            ips = collections.Counter(e["src_ip"] for e in org_events)
+            qnames = sorted({e.get("qname", "") for e in org_events})
+            refused = sum(
+                1 for e in org_events if e.get("response_kind") == "REFUSED"
+            )
+            print(
+                f"  {org:18s}  hits={len(org_events):3d}  refused={refused:3d}  "
+                f"src_ips={len(ips)}",
+            )
+            for ip, n in ips.most_common(5):
+                print(f"      {n:3d}x {ip}")
+            for q in qnames[:3]:
+                print(f"      qname: {q}")
 
     # --- top sources ---
     section("top external DNS sources (10)")

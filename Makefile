@@ -114,8 +114,8 @@ shell:  ## Interactive container shell (busybox sh — no bash in minimal image)
 
 # ---- docker (prod — caddy + acme + host-IP bindings from .env) -----------
 
-up-prod:  ## docker compose up -d with prod overlay (caddy + acme + host-IP)
-	docker compose $(PROD_COMPOSE) up -d
+up-prod:  ## docker compose up -d --build with prod overlay (caddy + acme + host-IP)
+	docker compose $(PROD_COMPOSE) up -d --build
 
 down-prod:  ## Stop prod stack
 	docker compose $(PROD_COMPOSE) down

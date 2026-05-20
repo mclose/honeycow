@@ -138,7 +138,10 @@
       of repeating moos &mdash; no shell expansion, no piped commands,
       just a name long enough to push the response over 512 bytes.</p>
 <pre>dig +ignore @honeycow.net TXT \
-  Mooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo.Mooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo.Mooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo.Mooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo.tld</pre>
+"Mooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo.\
+Mooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo.\
+Mooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo.\
+Mooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo.tld"</pre>
     <p>The response header should read
       <code>flags: qr aa tc rd</code> (AA=1, TC=1, RA absent), with
       <code>ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 0</code>, and

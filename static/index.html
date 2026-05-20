@@ -106,7 +106,10 @@
     response over 512&nbsp;bytes.
   </p>
 <pre>dig +ignore @<i>this-host</i> TXT \
-  Mooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo.Mooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo.Mooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo.Mooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo.tld</pre>
+"Mooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo.\
+Mooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo.\
+Mooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo.\
+Mooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo.tld"</pre>
   <p>
     The response header should read
     <code>flags: qr aa tc rd</code> (AA=1, TC=1, RA absent), with

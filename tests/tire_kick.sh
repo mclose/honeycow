@@ -102,9 +102,9 @@ echo "    nonce=$NONCE"
 echo
 
 # Unique qnames per probe so we can find them by name in events.jsonl.
-Q_V4_UDP_BLUFF="kick-${NONCE}-v4u-bluff.example.com"
-Q_V6_UDP_BLUFF="kick-${NONCE}-v6u-bluff.example.com"
-Q_V4_TCP_BLUFF="kick-${NONCE}-v4t-bluff.example.com"
+Q_V4_UDP_BLUFF="kick-${NONCE}-v4u-bluff.tld"
+Q_V6_UDP_BLUFF="kick-${NONCE}-v6u-bluff.tld"
+Q_V4_TCP_BLUFF="kick-${NONCE}-v4t-bluff.tld"
 Q_V4_UDP_EXEMPT="kick-${NONCE}-v4u-exempt.dnsscan.shadowserver.org"
 Q_V4_UDP_SOA="kick-${NONCE}-v4u-soa.tld"
 HTTP_HOST="kick-${NONCE}.tire-kick.invalid"

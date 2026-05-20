@@ -133,7 +133,8 @@ logs-wire:  ## List recent pcaps + tail today's Zeek dns.log on $(VPS_HOST)
 	@ssh $(VPS_HOST) 'docker exec honeycow-tcpdump ls -lt /pcaps | head -10'
 	@echo
 	@echo "== today's Zeek dns.log (tail 20) =="
-	@ssh $(VPS_HOST) 'docker exec honeycow-zeek sh -c "tail -20 /zeek/logs/dns.log 2>/dev/null || echo (no dns.log yet)"'
+	@ssh $(VPS_HOST) 'docker exec honeycow-zeek tail -20 /zeek/logs/dns.log' \
+		|| echo "(no dns.log yet)"
 
 report-wire:  ## Cross-check Zeek dns.log count vs honeycow events.jsonl count (last $(HOURS)h)
 	@tools/report_wire.py --hours $(HOURS) --remote $(VPS_HOST)

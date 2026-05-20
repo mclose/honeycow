@@ -173,10 +173,13 @@ services:
       - NET_ADMIN
       - NET_RAW
     working_dir: /zeek/logs
+    # -C ignores invalid TCP/UDP checksums. Required because cloud NICs
+    # offload checksum computation to hardware; the kernel surfaces "0"
+    # to userspace and Zeek would otherwise drop most packets as bad.
     command:
       - sh
       - -c
-      - "exec zeek -i any -f 'port 53 or port 80 or port 443' local LogAscii::use_json=T"
+      - "exec zeek -C -i any -f 'port 53 or port 80 or port 443' local LogAscii::use_json=T"
     volumes:
       - honeycow_zeek:/zeek/logs
 

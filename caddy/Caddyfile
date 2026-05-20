@@ -29,6 +29,10 @@ honeycow.net {
 	tls /certs/honeycow.net/fullchain.pem /certs/honeycow.net/privkey.pem
 
 	root * /srv/honeycow
+	# `templates` parses HTML through Caddy's Go-template engine before
+	# serving, so {{.RemoteIP}} renders the visitor's IP into the page
+	# (matching the closer's cowsay-with-IP behavior).
+	templates
 	file_server {
 		index honeycow_net.html
 	}

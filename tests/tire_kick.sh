@@ -80,6 +80,41 @@ check_dns() {
     ok "$label"
 }
 
+check_explainer() {
+    # The explainer at https://honeycow.net is served by Caddy with
+    # `templates` enabled. We can't correlate to events.jsonl (Caddy
+    # doesn't log there), so this is a body-content-only check.
+    local label="$1" body_file="$2"
+    if [ ! -s "$body_file" ]; then
+        ng "$label" "response body file empty/missing"; return
+    fi
+    if grep -q "{{" "$body_file"; then
+        ng "$label" "body has unrendered template tags (Caddy templates not enabled?)"; return
+    fi
+    if ! grep -q "Welcome to the pasture" "$body_file"; then
+        ng "$label" "body missing cowsay welcome marker"; return
+    fi
+    if ! grep -q "What we refuse" "$body_file"; then
+        ng "$label" "body missing 'What we refuse' section marker"; return
+    fi
+    # The heartbeat comment confirms the template engine actually ran AND
+    # the render is fresh (not a stale cached copy). Tolerate 60s clock
+    # skew between probe host and server.
+    local heartbeat
+    heartbeat="$(grep -oE 'rendered at [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z' "$body_file" | head -1 | sed 's/rendered at //')"
+    if [ -z "$heartbeat" ]; then
+        ng "$label" "no ISO-8601 heartbeat marker in body"; return
+    fi
+    local heartbeat_epoch now_epoch age
+    heartbeat_epoch=$(date -u -d "$heartbeat" +%s 2>/dev/null) || heartbeat_epoch=0
+    now_epoch=$(date -u +%s)
+    age=$((now_epoch - heartbeat_epoch))
+    if [ "$age" -gt 60 ] || [ "$age" -lt -60 ]; then
+        ng "$label" "heartbeat ${age}s off from now (cached / clock skew / stale deploy?)"; return
+    fi
+    ok "$label"
+}
+
 check_http() {
     local label="$1" host_header="$2" body_file="$3"
     local event
@@ -126,8 +161,9 @@ Q_V4_UDP_RESERVED="kick-${NONCE}-v4u-reserved.example.com"
 Q_V4_TCP_AXFR="kick-${NONCE}-v4t-axfr.tld"
 Q_V4_UDP_SOA="kick-${NONCE}-v4u-soa.tld"
 HTTP_HOST="kick-${NONCE}.tire-kick.invalid"
-HTTP_BODY="$(mktemp -t tire-kick-body.XXXXXX)"
-trap 'rm -f "$HTTP_BODY"' EXIT
+HTTP_BODY="$(mktemp -t tire-kick-closer.XXXXXX)"
+EXPLAINER_BODY="$(mktemp -t tire-kick-explainer.XXXXXX)"
+trap 'rm -f "$HTTP_BODY" "$EXPLAINER_BODY"' EXIT
 
 echo "==> Issuing probes"
 $DIG_BASE @"$HOST4" +short A "$Q_V4_UDP_BLUFF" > /dev/null || true
@@ -172,6 +208,15 @@ echo "  v4 UDP CHAOS:        version.bind (CH TXT)"
 # Save the response body for content assertions (cowsay marker, etc).
 curl -s -o "$HTTP_BODY" -m 3 -H "Host: $HTTP_HOST" "http://$HOST4/" || true
 echo "  HTTP closer:         Host=$HTTP_HOST"
+
+# HTTPS explainer probe via Caddy on port 443 with the real honeycow.net
+# Host header (so Caddy routes to the templated explainer, not the
+# reverse-proxy-to-honey-ns catch-all). --resolve forces the IP without
+# DNS; -k skips cert verification so the probe doesn't depend on a
+# trusted CA chain.
+curl -sk --resolve "honeycow.net:443:$HOST4" -o "$EXPLAINER_BODY" -m 3 \
+    "https://honeycow.net/" || true
+echo "  HTTPS explainer:     https://honeycow.net/ (via $HOST4)"
 
 echo
 
@@ -229,6 +274,8 @@ else
 fi
 
 check_http "HTTP closer" "$HTTP_HOST" "$HTTP_BODY"
+
+check_explainer "HTTPS explainer" "$EXPLAINER_BODY"
 
 # ---- summary -------------------------------------------------------------
 

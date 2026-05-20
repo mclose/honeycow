@@ -60,9 +60,11 @@ make smoke HOST=127.0.0.1
 | `make test` | Run unit tests. |
 | `make lint` | Run Ruff checks. |
 | `make smoke HOST=...` | Probe a live deployment on port 53. |
-| `make docker-build` | Build the Docker image. |
-| `make docker-up` | Start the Docker Compose service. |
-| `make logs` | Tail the JSONL event log in the container. |
+| `make build` | Build the Docker image. |
+| `make up` | Start the Compose service (dev: binds 0.0.0.0/::). |
+| `make up-prod` | Start the prod stack (caddy + acme + host-IP bindings). |
+| `make logs` | Tail compose logs. |
+| `make events-tail` | Tail the JSONL event log inside the container. |
 
 ## What It Serves
 

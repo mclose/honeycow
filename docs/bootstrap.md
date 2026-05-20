@@ -165,7 +165,7 @@ point at the BIND host and the zone the key is authorized for.
 ## First-time cert issuance
 
 The one-time commands live as a comment block at the top of
-`docker-compose.caddy.yml`. In short:
+`docker-compose.prod.yml`. In short:
 
 ```bash
 cd ~/projects/honeycow
@@ -173,16 +173,16 @@ export $(grep -v '^#' .env | xargs)
 
 # Build the local image first so the daemon won't complain about a
 # missing image when other services start.
-docker compose -f docker-compose.yml -f docker-compose.caddy.yml \
+docker compose -f docker-compose.yml -f docker-compose.prod.yml \
   build honey-ns
 
 # Register an LE account, issue, install the cert into /certs.
-docker compose -f docker-compose.yml -f docker-compose.caddy.yml \
+docker compose -f docker-compose.yml -f docker-compose.prod.yml \
   run --rm acme --register-account -m "$HONEY_ABUSE_EMAIL"
-docker compose -f docker-compose.yml -f docker-compose.caddy.yml \
+docker compose -f docker-compose.yml -f docker-compose.prod.yml \
   run --rm acme --issue --dns dns_nsupdate -d "$HONEY_DOMAIN" \
   --server letsencrypt
-docker compose -f docker-compose.yml -f docker-compose.caddy.yml \
+docker compose -f docker-compose.yml -f docker-compose.prod.yml \
   run --rm acme --install-cert -d "$HONEY_DOMAIN" \
   --fullchain-file /certs/$HONEY_DOMAIN/fullchain.pem \
   --key-file /certs/$HONEY_DOMAIN/privkey.pem \
@@ -196,8 +196,8 @@ filesystem path; check what `.env` looks like.)
 
 ```bash
 cd ~/projects/honeycow
-docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d
-docker compose -f docker-compose.yml -f docker-compose.caddy.yml ps
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.prod.yml ps
 ```
 
 Three containers should be `running`: `honeycow`, `honeycow-caddy`,

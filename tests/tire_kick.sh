@@ -81,7 +81,7 @@ check_dns() {
 }
 
 check_http() {
-    local label="$1" host_header="$2"
+    local label="$1" host_header="$2" body_file="$3"
     local event
     event="$(find_event ".event==\"http_closer\" and .host==\"$host_header\"")"
     if [ -z "$event" ]; then
@@ -91,6 +91,21 @@ check_http() {
     resp_bytes=$(echo "$event" | jq -r '.response_bytes')
     if [ "$resp_bytes" -le 0 ] 2>/dev/null; then
         ng "$label" "response_bytes=$resp_bytes (want > 0)"; return
+    fi
+    if [ ! -s "$body_file" ]; then
+        ng "$label" "response body file empty/missing"; return
+    fi
+    # Body markers: would have caught the "compose up without --build"
+    # silent-no-deploy bug that bit us on PR #8.
+    if ! grep -q "Welcome to the pasture" "$body_file"; then
+        ng "$label" "body missing cowsay welcome marker"; return
+    fi
+    if ! grep -q "observably not an open resolver" "$body_file"; then
+        ng "$label" "body missing 'observably not an open resolver' marker"; return
+    fi
+    # Templating must have substituted the placeholders.
+    if grep -qE "\{client_ip\}|\{cowsay_block\}" "$body_file"; then
+        ng "$label" "body contains unsubstituted placeholder"; return
     fi
     ok "$label"
 }
@@ -105,9 +120,14 @@ echo
 Q_V4_UDP_BLUFF="kick-${NONCE}-v4u-bluff.tld"
 Q_V6_UDP_BLUFF="kick-${NONCE}-v6u-bluff.tld"
 Q_V4_TCP_BLUFF="kick-${NONCE}-v4t-bluff.tld"
+Q_V6_TCP_BLUFF="kick-${NONCE}-v6t-bluff.tld"
 Q_V4_UDP_EXEMPT="kick-${NONCE}-v4u-exempt.dnsscan.shadowserver.org"
+Q_V4_UDP_RESERVED="kick-${NONCE}-v4u-reserved.example.com"
+Q_V4_TCP_AXFR="kick-${NONCE}-v4t-axfr.tld"
 Q_V4_UDP_SOA="kick-${NONCE}-v4u-soa.tld"
 HTTP_HOST="kick-${NONCE}.tire-kick.invalid"
+HTTP_BODY="$(mktemp -t tire-kick-body.XXXXXX)"
+trap 'rm -f "$HTTP_BODY"' EXIT
 
 echo "==> Issuing probes"
 $DIG_BASE @"$HOST4" +short A "$Q_V4_UDP_BLUFF" > /dev/null || true
@@ -123,8 +143,21 @@ fi
 $DIG_BASE @"$HOST4" +tcp +short A "$Q_V4_TCP_BLUFF" > /dev/null || true
 echo "  v4 TCP bluff:        $Q_V4_TCP_BLUFF"
 
+if [ -n "$HOST6" ]; then
+    $DIG_BASE @"$HOST6" +tcp +short A "$Q_V6_TCP_BLUFF" > /dev/null || true
+    echo "  v6 TCP bluff:        $Q_V6_TCP_BLUFF"
+else
+    echo "  v6 TCP bluff:        SKIPPED (HOST6 unset)"
+fi
+
 $DIG_BASE @"$HOST4" +short A "$Q_V4_UDP_EXEMPT" > /dev/null || true
 echo "  v4 UDP exempt:       $Q_V4_UDP_EXEMPT"
+
+$DIG_BASE @"$HOST4" +short A "$Q_V4_UDP_RESERVED" > /dev/null || true
+echo "  v4 UDP reserved:     $Q_V4_UDP_RESERVED"
+
+$DIG_BASE @"$HOST4" +tcp +short AXFR "$Q_V4_TCP_AXFR" > /dev/null || true
+echo "  v4 TCP AXFR:         $Q_V4_TCP_AXFR"
 
 $DIG_BASE @"$HOST4" +short SOA "$Q_V4_UDP_SOA" > /dev/null || true
 echo "  v4 UDP SOA:          $Q_V4_UDP_SOA"
@@ -136,7 +169,8 @@ $DIG_BASE @"$HOST4" +short -c CH -t TXT version.bind > /dev/null || true
 echo "  v4 UDP CHAOS:        version.bind (CH TXT)"
 
 # HTTP closer probe via Caddy (port 80) with a unique Host header.
-curl -s -o /dev/null -m 3 -H "Host: $HTTP_HOST" "http://$HOST4/" || true
+# Save the response body for content assertions (cowsay marker, etc).
+curl -s -o "$HTTP_BODY" -m 3 -H "Host: $HTTP_HOST" "http://$HOST4/" || true
 echo "  HTTP closer:         Host=$HTTP_HOST"
 
 echo
@@ -162,8 +196,21 @@ fi
 check_dns "v4 TCP bluff"  ".qname==\"${Q_V4_TCP_BLUFF}.\" and .transport==\"tcp\"" \
     "synth_a" "NOERROR" "v4"
 
+if [ -n "$HOST6" ]; then
+    check_dns "v6 TCP bluff"  ".qname==\"${Q_V6_TCP_BLUFF}.\" and .transport==\"tcp\"" \
+        "synth_a" "NOERROR" "v6"
+else
+    note "v6 TCP bluff" "HOST6 unset"
+fi
+
 check_dns "v4 UDP exempt" ".qname==\"${Q_V4_UDP_EXEMPT}.\"" \
     "exempt" "REFUSED" "v4"
+
+check_dns "v4 UDP reserved" ".qname==\"${Q_V4_UDP_RESERVED}.\"" \
+    "exempt" "REFUSED" "v4"
+
+check_dns "v4 TCP AXFR" ".qname==\"${Q_V4_TCP_AXFR}.\" and .qtype_name==\"AXFR\"" \
+    "refused_xfr" "REFUSED" "v4"
 
 check_dns "v4 UDP SOA"    ".qname==\"${Q_V4_UDP_SOA}.\" and .qtype_name==\"SOA\"" \
     "synth_soa" "NOERROR" "v4"
@@ -181,7 +228,7 @@ else
     fi
 fi
 
-check_http "HTTP closer" "$HTTP_HOST"
+check_http "HTTP closer" "$HTTP_HOST" "$HTTP_BODY"
 
 # ---- summary -------------------------------------------------------------
 

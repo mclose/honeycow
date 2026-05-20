@@ -25,6 +25,20 @@ name: honeycow
 #          cert via DNS-01 over BIND nsupdate (RFC 2136). The reload
 #          hook posts to Caddy's admin API on the internal network.
 #
+#   4. wire-monitoring sidecars are introduced:
+#        - tcpdump: passive pcap capture on the host's network stack,
+#          BPF-filtered to ports 53/80/443; 7-day hourly ring buffer.
+#          Independent ground truth in case our own JSONL parser drops
+#          packets or in case we need to reconstruct exactly what hit
+#          us during an abuse complaint window.
+#        - zeek: passive protocol analyzer on the same host stack;
+#          emits structured conn/dns/http logs that can be diffed
+#          against honeycow's events.jsonl to surface drops.
+#        - wire-cleanup: deletes Zeek logs older than 7d.
+#      All three use `network_mode: host` + NET_ADMIN/NET_RAW. This is
+#      a real privilege expansion vs. honey-ns/caddy; they're confined
+#      to passive packet observation but still need to be deliberate.
+#
 # Required .env values (gitignored, set per host):
 #   HONEY_PUBLIC_A         public IPv4 (NS glue + sinkhole + host bind)
 #   HONEY_PUBLIC_AAAA      public IPv6 (same; empty disables v6 listeners)
@@ -113,8 +127,85 @@ services:
       - caddy_certs:/certs
       - ./acme/tsig.key:/etc/acme/tsig.key:ro
 
+  # Wire-monitoring sidecar: raw pcap capture, host network, BPF-filtered.
+  # 7-day hourly ring buffer (168 files, rotate every 3600s = 1h).
+  # The strftime tokens in -w give each capture a sortable filename.
+  tcpdump:
+    build:
+      context: .
+      dockerfile: infra/tcpdump.Dockerfile
+    image: honeycow-tcpdump:latest
+    container_name: honeycow-tcpdump
+    restart: unless-stopped
+    network_mode: host
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    command:
+      - -i
+      - any
+      - -G
+      - "3600"
+      - -W
+      - "168"
+      - -n
+      - -U
+      - -w
+      - /pcaps/honeycow-%Y%m%d-%H%M.pcap
+      - port 53 or port 80 or port 443
+    volumes:
+      - honeycow_pcaps:/pcaps
+
+  # Wire-monitoring sidecar: Zeek protocol analyzer on host network.
+  # Default `local` script emits conn.log, dns.log, http.log, weird.log,
+  # etc. JSON output for easier diffing against honeycow events.jsonl.
+  zeek:
+    image: zeek/zeek:7.1
+    container_name: honeycow-zeek
+    restart: unless-stopped
+    network_mode: host
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    working_dir: /zeek/logs
+    command:
+      - sh
+      - -c
+      - "exec zeek -i any -f 'port 53 or port 80 or port 443' local LogAscii::use_json=T"
+    volumes:
+      - honeycow_zeek:/zeek/logs
+
+  # Tiny housekeeping loop: prune Zeek log files older than 7 days
+  # hourly. tcpdump manages its own ring buffer; pcap volume needs no
+  # external cleanup.
+  wire-cleanup:
+    image: alpine:3.20
+    container_name: honeycow-wire-cleanup
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    command:
+      - sh
+      - -c
+      - |
+        while true; do
+          find /zeek -type f -mtime +7 -delete 2>/dev/null || true
+          find /zeek -type d -empty -delete 2>/dev/null || true
+          sleep 3600
+        done
+    volumes:
+      - honeycow_zeek:/zeek
+
 volumes:
   caddy_data:
   caddy_config:
   caddy_certs:
   acme_data:
+  honeycow_pcaps:
+  honeycow_zeek:

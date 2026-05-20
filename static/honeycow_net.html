@@ -1,4 +1,8 @@
 <!doctype html>
+{{- /* Render-time heartbeat. Visible in `view source`; lets tire-kick
+       confirm the template engine ran and we're not staring at a
+       stuck/cached version. Format is ISO-8601 UTC. */ -}}
+<!-- rendered at {{now | date "2006-01-02T15:04:05Z"}} -->
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -69,6 +73,18 @@
     footer {
       font-size: 0.9rem;
       color: var(--muted);
+    }
+    .pasture {
+      text-align: center;
+      margin: 3rem 0 1rem;
+      color: var(--muted);
+    }
+    .pasture pre {
+      display: inline-block;
+      text-align: left;
+      font-size: 0.85em;
+      line-height: 1.15;
+      margin: 0;
     }
   </style>
 </head>
@@ -154,6 +170,22 @@
         Source for honeycow + sibling project chaoscow will be published
         there when it's ready for daylight.</p>
     </footer>
+
+    {{- /* cowsay footer — matches the closer page's per-visitor IP greeting. */ -}}
+    {{- $ip := .RemoteIP -}}
+    {{- $welcome := "Welcome to the pasture!" -}}
+    {{- $width := max (len $welcome) (len $ip) -}}
+    <div class="pasture">
+<pre> {{ repeat (add $width 2) "_" }}
+/ {{ printf "%-*s" $width $welcome }} \
+\ {{ printf "%-*s" $width $ip }} /
+ {{ repeat (add $width 2) "-" }}
+        \   ^__^
+         \  (oo)\_______
+            (__)\       )\/\
+                ||----w |
+                ||     ||</pre>
+    </div>
   </div>
 </body>
 </html>

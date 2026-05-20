@@ -114,8 +114,10 @@ shell:  ## Interactive container shell (busybox sh — no bash in minimal image)
 
 # ---- docker (prod — caddy + acme + host-IP bindings from .env) -----------
 
-up-prod:  ## docker compose up -d --build with prod overlay (caddy + acme + host-IP)
+up-prod:  ## docker compose up -d --build with prod overlay (caddy + acme + host-IP) + caddy reload
 	docker compose $(PROD_COMPOSE) up -d --build
+	@docker exec honeycow-caddy caddy reload --config /etc/caddy/Caddyfile 2>/dev/null \
+		|| echo "(caddy reload skipped — container not running or not yet ready)"
 
 down-prod:  ## Stop prod stack
 	docker compose $(PROD_COMPOSE) down

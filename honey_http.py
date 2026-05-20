@@ -180,14 +180,29 @@ def _resolve_client_ip(peer_ip: str, xff: str) -> str:
     return last
 
 
+_BUDGET_EXHAUSTED_BODY = b"honeycow: rate ceiling reached.\n"
+_BUDGET_EXHAUSTED_RESPONSE = (
+    b"HTTP/1.1 503 Service Unavailable\r\n"
+    b"Content-Length: " + str(len(_BUDGET_EXHAUSTED_BODY)).encode() + b"\r\n"
+    b"Content-Type: text/plain; charset=utf-8\r\n"
+    b"Cache-Control: no-store\r\n"
+    b"Connection: close\r\n"
+    b"Server: honeycow\r\n"
+    b"\r\n" + _BUDGET_EXHAUSTED_BODY
+)
+
+
 class HTTPCloser:
-    def __init__(self, body: bytes, log_path: Path) -> None:
+    def __init__(self, body: bytes, log_path: Path, budget=None) -> None:
         # `body` is the page template containing {cowsay_block} and
         # {client_ip} placeholders. The rendered response varies per
         # request (each visitor sees their own IP in the cowsay footer),
         # so we don't pre-build a single response anymore.
+        # `budget` is an optional OutboundBudget; when exhausted, the
+        # closer returns a tiny 503 instead of the full templated page.
         self.body_template = body
         self.log_path = log_path
+        self.budget = budget
 
     @staticmethod
     def _build_response(body: bytes) -> bytes:
@@ -229,6 +244,14 @@ class HTTPCloser:
             client_ip = _resolve_client_ip(src_ip, xff)
             body = render_body(self.body_template, client_ip)
             response = self._build_response(body)
+
+            # Outbound byte budget check — if exhausted, send the tiny
+            # 503 instead of the full closer page. The 503 is small
+            # enough to fit within whatever budget remains (or forced
+            # through if not).
+            if self.budget is not None and not self.budget.try_charge(len(response)):
+                response = _BUDGET_EXHAUSTED_RESPONSE
+                self.budget.force_charge(len(response))
 
             try:
                 writer.write(response)
@@ -275,9 +298,10 @@ async def serve(
     port: int,
     body: bytes,
     log_path: Path,
+    budget=None,
 ) -> list[asyncio.AbstractServer]:
     """Bind HTTP servers and return them. The caller drives serve_forever."""
-    closer = HTTPCloser(body, log_path)
+    closer = HTTPCloser(body, log_path, budget=budget)
     servers: list[asyncio.AbstractServer] = []
 
     v4 = await asyncio.start_server(closer.handle, bind_v4, port, backlog=50)

@@ -46,11 +46,23 @@ name: honeycow
 #     --key-file /certs/honeycow.net/privkey.pem \
 #     --reloadcmd 'wget -q -O- --post-data="" http://caddy:2019/load || true'
 #
-# Why no `networks.default` block: an earlier version declared
-# `enable_ipv6: true` and a ULA subnet. It was never effective (morning
-# report shows v6 UFW hits but zero v6 DNS queries reaching honeycow)
-# and made `compose up` fail when sibling stacks held endpoints on
-# `honeycow_default`. Real v6 ingress is tracked separately.
+# IPv6 ingress: v6 queries reach honeycow via docker-proxy on the host's
+# v6 listener, but without a v6-enabled docker network the proxy
+# translates v6→v4 internally and the container sees the docker bridge
+# gateway as `src_ip` instead of the real v6 client. Enabling v6 on the
+# default network and assigning a ULA subnet gives the container a v6
+# address on its own interface, so docker-proxy can preserve the
+# original source. Recreating the network requires bringing every
+# service that holds an endpoint on it (honey-ns, caddy, acme) down
+# first; do that with `make down-prod` before the first deploy that
+# lands this config.
+
+networks:
+  default:
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: fd00:beef:beef::/64
 
 services:
   honey-ns:

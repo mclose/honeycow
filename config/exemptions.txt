@@ -37,3 +37,49 @@ internet-census.org
 # NetScout ASERT — qnames containing asertdnsresearch.*
 asertdnsresearch.com
 asertdnsresearch.net
+
+# --- RFC reserved special-use names ----------------------------------------
+# These are defined by RFC to never legitimately resolve to a public
+# authoritative answer; refusing them is good citizenship and costs nothing.
+# Sources: RFC 6761 (special-use TLDs), RFC 2606 (example.*), RFC 6303
+# (reverse-mapped private nets), RFC 4193 (ULA reverse).
+
+# RFC 6761 special-use TLDs
+localhost
+local
+test
+example
+invalid
+
+# RFC 2606 example domains
+example.com
+example.org
+example.net
+
+# RFC 6303 reverse zones — RFC 1918 / 0 / 127 / 255 / 169.254
+10.in-addr.arpa
+16.172.in-addr.arpa
+17.172.in-addr.arpa
+18.172.in-addr.arpa
+19.172.in-addr.arpa
+20.172.in-addr.arpa
+21.172.in-addr.arpa
+22.172.in-addr.arpa
+23.172.in-addr.arpa
+24.172.in-addr.arpa
+25.172.in-addr.arpa
+26.172.in-addr.arpa
+27.172.in-addr.arpa
+28.172.in-addr.arpa
+29.172.in-addr.arpa
+30.172.in-addr.arpa
+31.172.in-addr.arpa
+168.192.in-addr.arpa
+0.in-addr.arpa
+127.in-addr.arpa
+255.in-addr.arpa
+254.169.in-addr.arpa
+
+# RFC 4193 ULA + IPv6 loopback reverse zones
+d.f.ip6.arpa
+0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa

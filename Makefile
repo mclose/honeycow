@@ -39,6 +39,7 @@ HOST ?= 127.0.0.1
 .PHONY: help venv install hooks fmt lint check test e2e smoke tire-kick run \
         build up down restart rebuild logs events-tail shell status \
         up-prod down-prod logs-prod \
+        logs-wire report-wire \
         deploy setup-remote _sandbox_check \
         bump tag gh-release report clean
 
@@ -124,6 +125,18 @@ logs-prod:  ## Tail prod logs
 
 status:  ## docker compose ps on $(VPS_HOST)
 	ssh $(VPS_HOST) "cd projects/$(PROJECT) && docker compose $(PROD_COMPOSE) ps"
+
+# ---- wire-monitoring helpers --------------------------------------------
+
+logs-wire:  ## List recent pcaps + tail today's Zeek dns.log on $(VPS_HOST)
+	@echo "== recent pcaps =="
+	@ssh $(VPS_HOST) 'docker exec honeycow-tcpdump ls -lt /pcaps | head -10'
+	@echo
+	@echo "== today's Zeek dns.log (tail 20) =="
+	@ssh $(VPS_HOST) 'docker exec honeycow-zeek sh -c "tail -20 /zeek/logs/dns.log 2>/dev/null || echo (no dns.log yet)"'
+
+report-wire:  ## Cross-check Zeek dns.log count vs honeycow events.jsonl count (last $(HOURS)h)
+	@tools/report_wire.py --hours $(HOURS) --remote $(VPS_HOST)
 
 # ---- deploy --------------------------------------------------------------
 

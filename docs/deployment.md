@@ -59,9 +59,9 @@ docker compose logs -f -t
 ```
 
 The Compose service publishes `53/udp`, `53/tcp`, and `80/tcp`, writes
-events to the `honeycow_logs` named volume, bind-mounts
-`exemptions.txt` from the repo, runs read-only, and keeps only the
-`NET_BIND_SERVICE` capability.
+events to the `honeycow_logs` named volume, bind-mounts the `config/`
+directory from the repo into `/etc/honeycow/`, runs read-only, and
+keeps only the `NET_BIND_SERVICE` capability.
 
 After startup:
 
@@ -93,14 +93,19 @@ the squatter and the HTTP closer.
 
 ## Exemption Workflow
 
-The exemption list is `exemptions.txt` in the repo, bind-mounted into
-the container at `/etc/honeycow/exemptions.txt`. To add an entry:
+The exemption list is `config/exemptions.txt` in the repo. The whole
+`config/` directory is bind-mounted into the container at
+`/etc/honeycow/`, so atomic-rename writes (from rsync, editors, etc.)
+remain visible without a container restart. To add an entry:
 
 ```bash
-echo 'example.com' >> exemptions.txt
-docker exec honeycow kill -HUP 1
+echo 'example.com' >> config/exemptions.txt
+docker kill -s HUP honeycow
 docker compose logs --tail=20 honey-ns | grep 'exemption list reloaded'
 ```
+
+`docker kill -s HUP` is used rather than `docker exec honeycow kill`
+because the read-only minimal container does not ship a `kill` binary.
 
 Parse failures leave the existing list in effect.
 
@@ -128,7 +133,7 @@ curl -sI http://$HOST/                        # HTTP closer headers
 ## Operations
 
 - Tail runtime events with `make logs` or `docker compose logs -f -t`.
-- Edit `exemptions.txt` and `docker exec honeycow kill -HUP 1` to
+- Edit `config/exemptions.txt` and `docker kill -s HUP honeycow` to
   reload the block list without restarting.
 - Use UFW on the VPS for IP-level abuse; the app does not block by IP.
 - `HONEY_BIND_V6=` disables IPv6 binding if the VPS lacks it.

@@ -67,7 +67,7 @@ def classify_query(qname: str) -> str:
 
 
 # Maps known scanner-research zones (suffix match on lowercased qname) to a
-# short org label. Kept in sync with exemptions.txt's research-scanner block.
+# short org label. Kept in sync with config/exemptions.txt's research-scanner block.
 RESEARCH_SCANNER_SUFFIXES: tuple[tuple[str, str], ...] = (
     (".shadowserver.org.", "shadowserver"),
     (".cybergreen.net.", "cybergreen"),

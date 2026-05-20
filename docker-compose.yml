@@ -23,9 +23,12 @@ services:
       - "80:80/tcp"
     volumes:
       - honeycow_logs:/var/log/honeycow
-      # exemptions.txt is bind-mounted so `kill -HUP 1` after editing reloads
-      # without rebuilding the image.
-      - ./exemptions.txt:/etc/honeycow/exemptions.txt:ro
+      # config/ is bind-mounted (directory, not single file) so editing
+      # exemptions.txt in any way — including atomic-rename writes from rsync
+      # or text editors — is visible to the container immediately. Single-file
+      # bind mounts pin to the source inode and miss replacements.
+      # Reload with: `docker kill -s HUP honeycow`
+      - ./config:/etc/honeycow:ro
     environment:
       HONEY_PUBLIC_A: ${HONEY_PUBLIC_A:?HONEY_PUBLIC_A must be set to the public IPv4 of this host}
       HONEY_PUBLIC_AAAA: ${HONEY_PUBLIC_AAAA:-}

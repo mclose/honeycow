@@ -8,19 +8,19 @@ name: honeycow
 # instead of 0.0.0.0/::, which avoids collisions with systemd-resolved
 # on 127.0.0.53 and makes the listening interfaces explicit.
 #
-# Set in this host's .env (gitignored):
-#   HONEY_PUBLIC_IPV4=<the public IPv4 NS glue points to>
-#   HONEY_PUBLIC_IPV6=<the public IPv6, or remove the v6 ports below>
+# Reuses HONEY_PUBLIC_A / HONEY_PUBLIC_AAAA from .env (also consumed by
+# the application for NS glue and the sinkhole target — one source of
+# truth). HONEY_PUBLIC_AAAA may be empty to skip v6 listeners.
 
 services:
   honey-ns:
     ports: !override
-      - "${HONEY_PUBLIC_IPV4:?HONEY_PUBLIC_IPV4 must be set in .env}:53:53/udp"
-      - "${HONEY_PUBLIC_IPV4:?HONEY_PUBLIC_IPV4 must be set in .env}:53:53/tcp"
-      - "${HONEY_PUBLIC_IPV4:?HONEY_PUBLIC_IPV4 must be set in .env}:80:80/tcp"
-      - "[${HONEY_PUBLIC_IPV6:?HONEY_PUBLIC_IPV6 must be set in .env}]:53:53/udp"
-      - "[${HONEY_PUBLIC_IPV6:?HONEY_PUBLIC_IPV6 must be set in .env}]:53:53/tcp"
-      - "[${HONEY_PUBLIC_IPV6:?HONEY_PUBLIC_IPV6 must be set in .env}]:80:80/tcp"
+      - "${HONEY_PUBLIC_A:?HONEY_PUBLIC_A must be set in .env}:53:53/udp"
+      - "${HONEY_PUBLIC_A:?HONEY_PUBLIC_A must be set in .env}:53:53/tcp"
+      - "${HONEY_PUBLIC_A:?HONEY_PUBLIC_A must be set in .env}:80:80/tcp"
+      - "[${HONEY_PUBLIC_AAAA:?HONEY_PUBLIC_AAAA must be set in .env (empty value disables v6)}]:53:53/udp"
+      - "[${HONEY_PUBLIC_AAAA:?HONEY_PUBLIC_AAAA must be set in .env (empty value disables v6)}]:53:53/tcp"
+      - "[${HONEY_PUBLIC_AAAA:?HONEY_PUBLIC_AAAA must be set in .env (empty value disables v6)}]:80:80/tcp"
 
 # Enable IPv6 on the default bridge so dockerd can NAT v6 traffic from the
 # host's public IPv6 into the container.

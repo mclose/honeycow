@@ -62,13 +62,17 @@ cert via DNS-01 over BIND nsupdate). All three are required.
   read-only. To reload exemptions, use `docker kill -s HUP honeycow`
   from the host. `docker exec honeycow kill -HUP 1` fails with "executable
   file not found in $PATH".
-- **Bind-mount inode pinning.** We bind-mount the `config/` directory
-  (not the single `config/exemptions.txt` file) for a reason: single-file
-  bind mounts pin to the source inode at container-start time, so
-  atomic-rename writes (rsync, vim, most editors, our own Edit tool)
-  replace the file at the same path but a different inode — and the
-  container keeps reading the original inode's contents. Directory binds
-  re-resolve filenames on every access; any write strategy works.
+- **Bind-mount inode pinning.** We bind-mount the `config/` and `caddy/`
+  directories (not the single `config/exemptions.txt` / `caddy/Caddyfile`
+  files) for a reason: single-file bind mounts pin to the source inode at
+  container-start time, so atomic-rename writes (rsync, vim, most editors,
+  our own Edit tool) replace the file at the same path but a different
+  inode — and the container keeps reading the original inode's contents.
+  Directory binds re-resolve filenames on every access; any write strategy
+  works. We hit this twice: first on `exemptions.txt`, then on `Caddyfile`
+  when enabling templating — the `templates` directive landed in the host
+  file but the container kept serving the pre-templating Caddyfile until
+  it was restarted.
 - **Caddy + acme are mandatory, not opt-in.** honeycow.net needs HTTPS
   (Caddy terminates TLS) and honeycow itself can't (and shouldn't) terminate
   TLS. The merged `docker-compose.prod.yml` reflects this. There is no

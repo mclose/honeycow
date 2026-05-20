@@ -25,7 +25,7 @@ acme.sh's `dns_nsupdate` hook reads this file directly and uses it with
 
 ## BIND-side prep (do this on the master before issuing)
 
-In the honeycow.net zone definition on `ns1.deflationhollow.net`:
+In the honeycow.net zone definition on the primary nameserver (`ns1.example.net`):
 
 ```
 key "acme-honeycow." {

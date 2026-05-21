@@ -196,6 +196,19 @@ def render(events: list[dict], ufw: list[dict], cert_issued: datetime | None) ->
     ufw_ips = collections.Counter(u["src"] for u in ufw)
     v4u, v6u, unku = bucket_v4_v6(ufw_ips)
     print(f"  UFW blocked  — v4: {v4u}  v6: {v6u}  other: {unku}")
+    # Sanity check: v6's share of reached DNS should roughly track its share
+    # of UFW traffic. If reached-share collapses to ~0 while UFW-share is
+    # nonzero, v6 ingress is broken (the pre-2026-05-20 bug). Both shares
+    # nonzero and similar = v6 ingress healthy.
+    reached_total = v4 + v6
+    ufw_total = v4u + v6u
+    if reached_total and ufw_total:
+        reached_v6_pct = 100 * v6 / reached_total
+        ufw_v6_pct = 100 * v6u / ufw_total
+        print(
+            f"  v6 ingress check — v6 share of reached DNS: {reached_v6_pct:.1f}%  "
+            f"v6 share of UFW: {ufw_v6_pct:.1f}%"
+        )
 
     # --- reflection-attempt traffic ---
     # query_drop events with src_port=53 and DROPPED_QR / oversized_datagram

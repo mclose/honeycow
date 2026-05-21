@@ -96,11 +96,6 @@ cert via DNS-01 over BIND nsupdate). All three are required.
   answerers to hosting providers. We REFUSE for known scanner-research
   zones (see `config/exemptions.txt`'s scanner-research block) to stay off
   the report, while still logging the probes. Don't remove those exemptions.
-- **IPv6 ingress is not actually working** despite the container binding
-  `[::]:53`. The morning report shows v6 UFW hits but zero v6 DNS queries
-  reaching honeycow. Treat this as a known bug, not a "did we deploy v6?"
-  question. Tracked in `~/.claude/TODO.md`.
-
 ## Architecture (file map)
 
 - `honey_ns.py` — asyncio UDP + TCP DNS listeners, wire parsing,

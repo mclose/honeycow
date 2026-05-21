@@ -11,11 +11,18 @@ Run on the host or pull the files locally first:
     scp <vps>:/var/lib/docker/volumes/honeycow_honeycow_logs/_data/events.jsonl .
     scp <vps>:/var/log/ufw.log .
     tools/morning_report.py --events events.jsonl --ufw ufw.log \\
-        --hours 24 --cert-issued 2026-05-20
+        --hours 24 --cert-issued 2026-05-20 \\
+        --our-ips-file tools/our-ips.txt
 
 `--cert-issued` (optional) marks a CT-log expected spike date — the
 report compares external DNS query counts before vs after that
 timestamp so a fresh-cert ramp is easy to spot.
+
+`--our-ips-file` (optional) loads a list of operator-owned IPs/CIDRs
+(gitignored; see `tools/our-ips.txt.example`). Matching sources are
+bucketed as self-test and excluded from external-traffic views so
+triage focuses on "not us" probes. `--our-ip IP/CIDR` (repeatable)
+adds extras inline.
 """
 
 from __future__ import annotations

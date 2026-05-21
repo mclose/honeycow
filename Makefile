@@ -147,8 +147,10 @@ report-wire:  ## Cross-check Zeek dns.log count vs honeycow events.jsonl count (
 
 # ---- deploy --------------------------------------------------------------
 
-deploy: _sandbox_check  ## Push to origin + prod (prod post-receive runs up-prod)
-	git push origin main
+deploy: _sandbox_check  ## Sync local main to merged origin/main, then push prod (post-receive runs up-prod)
+	git fetch origin
+	git checkout main
+	git merge --ff-only origin/main
 	git push prod main
 
 setup-remote:  ## One-time: create bare repo + post-receive hook on $(VPS_HOST)

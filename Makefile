@@ -29,9 +29,12 @@ DEV_LOG       ?= /tmp/honeycow.jsonl
 DEV_PUBLIC_A  ?= 127.0.0.1
 
 # Morning-report inputs (local copies pulled from VPS).
-EVENTS ?= /tmp/honeycow-analysis/events.jsonl
-UFW    ?= /tmp/honeycow-analysis/ufw.log
-HOURS  ?= 24
+EVENTS       ?= /tmp/honeycow-analysis/events.jsonl
+UFW          ?= /tmp/honeycow-analysis/ufw.log
+HOURS        ?= 24
+# Operator-specific list of our own IPs/CIDRs. Gitignored. Bucketed as
+# self-test in the morning report so triage focuses on "not us" traffic.
+OUR_IPS_FILE ?= tools/our-ips.txt
 
 # Smoke-test target.
 HOST ?= 127.0.0.1
@@ -207,7 +210,8 @@ smoke:  ## Post-deploy sanity check (HOST=<vps-ipv4>)
 
 report:  ## Morning report from /tmp/honeycow-analysis/{events.jsonl,ufw.log}
 	@tools/morning_report.py --events $(EVENTS) --ufw $(UFW) --hours $(HOURS) \
-		$(if $(CERT_ISSUED),--cert-issued $(CERT_ISSUED))
+		$(if $(CERT_ISSUED),--cert-issued $(CERT_ISSUED)) \
+		$(if $(wildcard $(OUR_IPS_FILE)),--our-ips-file $(OUR_IPS_FILE))
 
 # ---- housekeeping --------------------------------------------------------
 

@@ -33,6 +33,23 @@ from pathlib import Path
 
 BIND_CHAOS = {"version.bind.", "hostname.bind.", "id.server.", "authors.bind."}
 
+# Canary qnames used by open-resolver scanners to detect whether a host
+# will answer recursively for names it isn't authoritative for. These
+# are names that *should* resolve in the wild; receiving a useful answer
+# from a non-Google nameserver tells the scanner the target is an open
+# resolver. `dnsscan.shadowserver.org` was the classic canary, but it's
+# now exempted by most honeypots and well-behaved auth servers, so
+# scanners have started rotating to high-recognition names. First member
+# observed: `google.com.` (256-query cluster on 2026-05-20/21 from
+# AS60223 NETIFACE + AS205759 GHOSTYNETWORKS). Grow this set as new
+# canary names appear; keep entries narrow (exact lowercased FQDN match
+# with trailing dot) since "saw google.com.A from somewhere" is the
+# *only* signal — we don't want to false-positive on, say, a chaos-class
+# fingerprinter that happens to also touch cloudflare.com.
+OPEN_RESOLVER_CANARIES = {
+    "google.com.",
+}
+
 
 def is_private_or_loopback(ip: str) -> bool:
     try:
@@ -49,6 +66,41 @@ def ip_version(ip: str) -> int | None:
         return None
 
 
+def is_our_ip(ip: str, networks: list[ipaddress._BaseNetwork]) -> bool:
+    if not networks:
+        return False
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return any(addr in net for net in networks)
+
+
+def load_our_ips(path: Path | None, extra: list[str]) -> list[ipaddress._BaseNetwork]:
+    """Load a list of IPs/CIDRs identifying our own infrastructure.
+
+    Entries from `path` (one IP/CIDR per line, # comments allowed) are
+    combined with any `--our-ip` overrides. Bare IPs become /32 or /128.
+    """
+    nets: list[ipaddress._BaseNetwork] = []
+    raw: list[str] = []
+    if path is not None:
+        try:
+            for line in path.read_text().splitlines():
+                line = line.split("#", 1)[0].strip()
+                if line:
+                    raw.append(line)
+        except OSError as exc:
+            print(f"[our-ips] cannot read {path}: {exc}", file=sys.stderr)
+    raw.extend(extra)
+    for entry in raw:
+        try:
+            nets.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError as exc:
+            print(f"[our-ips] skipping {entry!r}: {exc}", file=sys.stderr)
+    return nets
+
+
 def classify_query(qname: str) -> str:
     if not qname:
         return "empty"
@@ -61,6 +113,8 @@ def classify_query(qname: str) -> str:
         return "shadowserver"
     if low.endswith(".cybergreen.net.") or low.endswith(".cyberresilience.io."):
         return "open-resolver-test"
+    if low in OPEN_RESOLVER_CANARIES:
+        return "open-resolver-canary"
     if qname != low and any(c.isupper() for c in qname):
         return "0x20-case-mix"
     return "other"
@@ -168,15 +222,33 @@ def bucket_v4_v6(ips: collections.Counter) -> tuple[int, int, int]:
     return v4, v6, unknown
 
 
-def render(events: list[dict], ufw: list[dict], cert_issued: datetime | None) -> None:
+def render(
+    events: list[dict],
+    ufw: list[dict],
+    cert_issued: datetime | None,
+    our_nets: list[ipaddress._BaseNetwork] | None = None,
+) -> None:
+    our_nets = our_nets or []
     queries = [e for e in events if e.get("event") == "query"]
-    ext = [e for e in queries if not is_private_or_loopback(e.get("src_ip", ""))]
+    # "external" = not private/loopback. Self-test = external AND in our_nets.
+    # We split them so triage focuses on "not us" traffic, while keeping
+    # self-test visible (its mere presence is signal — outbound infra
+    # querying its own bluff host is worth noticing).
+    non_internal = [e for e in queries if not is_private_or_loopback(e.get("src_ip", ""))]
+    selftest = [e for e in non_internal if is_our_ip(e.get("src_ip", ""), our_nets)]
+    ext = [e for e in non_internal if not is_our_ip(e.get("src_ip", ""), our_nets)]
     drops = [e for e in events if e.get("event") == "query_drop"]
     http = [e for e in events if e.get("event") == "http_closer"]
 
     section("totals")
     print(f"  events:        {len(events)}")
-    print(f"  DNS queries:   {len(queries)} (external: {len(ext)})")
+    if our_nets:
+        print(
+            f"  DNS queries:   {len(queries)} "
+            f"(external: {len(ext)}, self-test: {len(selftest)})"
+        )
+    else:
+        print(f"  DNS queries:   {len(queries)} (external: {len(ext)})")
     print(f"  DNS drops:     {len(drops)}")
     print(f"  HTTP closer:   {len(http)}")
     print(f"  UFW log lines: {len(ufw)}")
@@ -184,8 +256,12 @@ def render(events: list[dict], ufw: list[dict], cert_issued: datetime | None) ->
     # --- v4/v6 split ---
     section("IPv4 vs IPv6")
     ext_ips = collections.Counter(e["src_ip"] for e in ext)
+    selftest_ips = collections.Counter(e["src_ip"] for e in selftest)
     v4, v6, unk = bucket_v4_v6(ext_ips)
     print(f"  external DNS queries — v4: {v4}  v6: {v6}  other: {unk}")
+    if our_nets:
+        v4s, v6s, unks = bucket_v4_v6(selftest_ips)
+        print(f"  self-test DNS queries — v4: {v4s}  v6: {v6s}  other: {unks}")
     http_ips = collections.Counter(
         e.get("client_ip") or e.get("src_ip") for e in http
         if not is_private_or_loopback(e.get("client_ip") or "")
@@ -209,6 +285,26 @@ def render(events: list[dict], ufw: list[dict], cert_issued: datetime | None) ->
             f"  v6 ingress check — v6 share of reached DNS: {reached_v6_pct:.1f}%  "
             f"v6 share of UFW: {ufw_v6_pct:.1f}%"
         )
+
+    # --- self-test traffic (our own infra showing up in the logs) ---
+    # Not a threat — but worth surfacing because it's worth knowing when
+    # *our* boxes are talking to the bluff (intentional dig sessions,
+    # outbound recursive lookups from our own resolvers landing back here
+    # via delegation, etc.). Excluded from `ext` everywhere downstream so
+    # top-sources / scanner families / CT-spike views show "not us" only.
+    if our_nets:
+        section("self-test traffic (our infra in the logs)")
+        if not selftest:
+            print("  (none in window)")
+        else:
+            qnames = collections.Counter(e.get("qname", "") for e in selftest)
+            print(f"  total queries: {len(selftest)} from {len(selftest_ips)} our IPs")
+            for ip, n in selftest_ips.most_common():
+                print(f"    {n:4d}  {ip}  (v{ip_version(ip)})")
+            print("  top qnames:")
+            for q, n in qnames.most_common(5):
+                preview = q if len(q) <= 70 else q[:67] + "..."
+                print(f"    {n:4d}  {preview}")
 
     # --- reflection-attempt traffic ---
     # query_drop events with src_port=53 and DROPPED_QR / oversized_datagram
@@ -348,6 +444,12 @@ def main() -> int:
                     help="window of analysis in hours (default 24)")
     ap.add_argument("--cert-issued", type=str, default=None,
                     help="ISO timestamp of recent cert issuance for CT-log spike check")
+    ap.add_argument("--our-ips-file", type=Path, default=None,
+                    help="file listing our own IPs/CIDRs (one per line, # comments) "
+                         "to bucket as self-test rather than external traffic")
+    ap.add_argument("--our-ip", action="append", default=[],
+                    help="IP or CIDR identifying our own infrastructure "
+                         "(repeatable; merged with --our-ips-file)")
     args = ap.parse_args()
 
     since = datetime.now(tz=UTC) - timedelta(hours=args.hours)
@@ -357,12 +459,16 @@ def main() -> int:
         if cert_issued.tzinfo is None:
             cert_issued = cert_issued.replace(tzinfo=UTC)
 
+    our_nets = load_our_ips(args.our_ips_file, args.our_ip)
+
     events = load_events(args.events, since)
     ufw = parse_ufw(args.ufw, since) if args.ufw else []
 
     print(f"# HoneyCow morning report — window: last {args.hours:g}h "
           f"(since {since.isoformat()})")
-    render(events, ufw, cert_issued)
+    if our_nets:
+        print(f"# self-test filter: {len(our_nets)} network(s) loaded")
+    render(events, ufw, cert_issued, our_nets=our_nets)
     return 0
 
 

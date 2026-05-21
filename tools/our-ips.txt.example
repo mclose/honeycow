@@ -1,0 +1,21 @@
+# Our own infrastructure IPs / CIDRs.
+#
+# tools/morning_report.py loads this (via `make report` or
+# `--our-ips-file tools/our-ips.txt`) to bucket matching source IPs as
+# "self-test" instead of "external". Presence here does not justify a
+# given query being in the logs — it just lets us identify it fast so
+# triage focuses on "not us" traffic.
+#
+# Copy to tools/our-ips.txt (gitignored) and edit for your environment.
+# One IP or CIDR per line; # comments allowed.
+
+# HoneyCow VPS (claude.lab.deflationhollow.net)
+# 76.13.112.47
+# 2a02:4780:4:7323::1
+
+# Wireguard / Unbound recursive resolver
+# 167.71.175.12
+# 2604:a880:800:10::/64
+
+# Laptop / jump host (tailscale CGNAT range — narrow if you prefer)
+# 100.64.0.0/10

@@ -13,6 +13,10 @@ venv/
 # acme.sh TSIG key for DNS-01 challenge — secret, do not commit.
 acme/tsig.key
 
+# Operator-specific "our infra" IP list for tools/morning_report.py.
+# Varies per operator (VPS, laptops, VPN hosts) — keep gitignored.
+tools/our-ips.txt
+
 # Claude Code: ignore everything in .claude/ by default; opt in per-file.
 .claude/*
 !.claude/settings.json

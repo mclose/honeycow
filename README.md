@@ -1,5 +1,11 @@
 # HoneyCow
 
+<p align="center">
+  <img src="static/honeycow_bees.png"
+       alt="HONEYCOW.net — HONEY &amp; DNS. A black-and-white spotted cow whose body is a glass honey jar, surrounded by bees."
+       width="640">
+</p>
+
 [![ci](https://github.com/mclose/honeycow/actions/workflows/ci.yml/badge.svg)](https://github.com/mclose/honeycow/actions/workflows/ci.yml)
 
 > honeycow: this is not the cow you are looking for. a polite ns squatter.

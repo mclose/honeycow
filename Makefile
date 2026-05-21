@@ -197,11 +197,15 @@ prove-tc1:  ## Demonstrate AA=1 / RA=0 / TC=1 in one dig (HOST=<ip>)
 	@dig +ignore +tries=1 +time=3 @$(HOST) TXT $(PROVE_TC1_QNAME)
 
 smoke:  ## Post-deploy sanity check (HOST=<vps-ipv4>)
-	@echo "SOA arbitrary.example @ $(HOST):53"
-	@dig @$(HOST) +time=3 +tries=1 SOA arbitrary.example | grep -q '^arbitrary\.example\..*SOA' \
+	@# Uses .tld (not a real TLD, not in exemptions). The RFC 2606/6761
+	@# special-use names (example.*, test, local, invalid) are exempted
+	@# and would REFUSE here — that's the bluff working correctly, but
+	@# the wrong signal for a "is the synth path alive" smoke check.
+	@echo "SOA arbitrary.tld @ $(HOST):53"
+	@dig @$(HOST) +time=3 +tries=1 SOA arbitrary.tld | grep -q '^arbitrary\.tld\..*SOA' \
 		|| (echo "smoke FAIL: no SOA"; exit 1)
-	@echo "A target.example.org @ $(HOST):53"
-	@dig @$(HOST) +time=3 +tries=1 +short A target.example.org | grep -qE '^[0-9]' \
+	@echo "A target.tld @ $(HOST):53"
+	@dig @$(HOST) +time=3 +tries=1 +short A target.tld | grep -qE '^[0-9]' \
 		|| (echo "smoke FAIL: no A"; exit 1)
 	@echo "TXT random.tld @ $(HOST):53"
 	@dig @$(HOST) +time=3 +tries=1 +short TXT random.tld | grep -q 'honeycow' \

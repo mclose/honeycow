@@ -31,10 +31,16 @@ Two-remote:
 - `prod` → `honeycow:honeycow.git` (bare repo, post-receive hook
   checks out main into `~/projects/honeycow` and runs `make up-prod`)
 
-`make deploy` = `git push origin main && git push prod main`. Branch
-protection on `main` requires PR + passing CI; pushes-to-prod are not
-gated, so the workflow is: PR → merge to main → push to prod from local
-or via `make deploy`.
+Branch protection on `main` is fully enforced (`enforce_admins: true`):
+**nobody can push directly to `main`, admins included** — no silent
+bypass. The only override is the sole admin (Matthew) deliberately
+toggling the rule in repo settings; never force/bypass on his behalf.
+
+So `make deploy` no longer pushes to origin. The workflow is: branch →
+PR → passing CI (`check`/ruff) → merge on GitHub → `make deploy`, which
+fetches the merged `origin/main`, fast-forwards local `main`
+(`--ff-only`), and pushes to `prod` (not gated; post-receive runs
+`make up-prod`).
 
 The prod stack is honey-ns + caddy (TLS for honeycow.net, reverse-proxy
 to honey-ns:80 for anything else) + acme (issues/renews honeycow.net

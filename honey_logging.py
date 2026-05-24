@@ -13,6 +13,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import dns.flags
 import dns.message
 import dns.opcode
 import dns.rcode
@@ -40,13 +41,38 @@ def write_jsonl(path: Path, record: dict[str, Any]) -> None:
 def header_fields(query: dns.message.Message | None) -> dict[str, Any]:
     if query is None:
         return {}
-    return {
+    fields: dict[str, Any] = {
         "id": query.id,
         "opcode": dns.opcode.to_text(query.opcode()),
         "rcode": dns.rcode.to_text(query.rcode()),
         "flags": int(query.flags),
         "qdcount": len(query.question),
     }
+    # EDNS OPT presence is signalled by edns >= 0. We capture the full
+    # wire shape (header bits + per-option raw bytes hex-encoded) so
+    # signatures we haven't dreamed up yet still have data to match
+    # against. Readers decode specific option types as needed.
+    if query.edns >= 0:
+        try:
+            fields["edns_version"] = int(query.edns)
+            fields["edns_payload"] = int(query.payload)
+            fields["edns_flags"] = int(query.ednsflags)
+            fields["do_set"] = bool(query.ednsflags & dns.flags.DO)
+            if query.options:
+                fields["edns_options"] = sorted(int(o.otype) for o in query.options)
+                opts_raw: list[dict[str, Any]] = []
+                for o in query.options:
+                    try:
+                        wire = o.to_wire()
+                    except (AttributeError, TypeError):
+                        wire = b""
+                    opts_raw.append(
+                        {"otype": int(o.otype), "data_hex": wire.hex()},
+                    )
+                fields["edns_options_raw"] = opts_raw
+        except (AttributeError, TypeError) as exc:
+            log.debug("edns field extraction failed: %s", exc)
+    return fields
 
 
 def question_fields(query: dns.message.Message | None) -> dict[str, Any]:

@@ -108,12 +108,42 @@ def load_our_ips(path: Path | None, extra: list[str]) -> list[ipaddress._BaseNet
     return nets
 
 
-def classify_query(qname: str) -> str:
+CHAOS_LEGIT_QTYPES = {"TXT", "NS"}
+FLAG_RD = 0x0100  # DNS header RD bit
+
+
+def classify_query(event: dict) -> str:
+    qname = event.get("qname", "")
+    qclass = event.get("qclass_name", "IN")
+    qtype = event.get("qtype_name", "")
+    opcode = event.get("opcode", "QUERY")
+    rd_set = bool(event.get("flags", 0) & FLAG_RD)
+
     if not qname:
         return "empty"
     low = qname.lower()
-    if low in BIND_CHAOS:
-        return "bind-chaos"
+    banner_qname = low in BIND_CHAOS
+
+    # Non-IN classes (CHAOS, HESIOD) have one legitimate use against us:
+    # CHAOS TXT/NS banner probes (`version.bind`, `id.server`, ...). Any
+    # *other* shape in a non-IN class matches the CVE-2026-5946 trigger
+    # pattern — non-IN class used in an IN-only context (recursion request,
+    # IN-typical qtype, non-QUERY opcode, or unexpected qname).
+    if qclass in {"CH", "HS"}:
+        chaos_banner = (
+            qclass == "CH"
+            and banner_qname
+            and qtype in CHAOS_LEGIT_QTYPES
+            and not rd_set
+            and opcode == "QUERY"
+        )
+        return "chaos-banner" if chaos_banner else "cve-2026-5946-trigger"
+
+    # IN-class banner-qname queries (`TXT version.bind` in class IN —
+    # scanners that don't bother setting the chaos class). Same category
+    # for reporting purposes; the CVE bucket above is class-gated.
+    if banner_qname:
+        return "chaos-banner"
     if "asertdnsresearch" in low:
         return "asert-netscout"
     if "shadowserver" in low:
@@ -360,9 +390,30 @@ def render(
 
     # --- scanner fingerprint families ---
     section("DNS probe families")
-    fam = collections.Counter(classify_query(e.get("qname", "")) for e in ext)
+    fam_labels = [(e, classify_query(e)) for e in ext]
+    fam = collections.Counter(label for _, label in fam_labels)
     for k, n in fam.most_common():
         print(f"  {n:4d}  {k}")
+
+    # --- CVE-2026-5946 trigger candidates (BIND non-IN-class DoS) ---
+    # See https://kb.isc.org/docs/cve-2026-5946 — non-IN-class queries
+    # used in IN-only contexts trigger assertion failures in named.
+    # We're not vulnerable; this section surfaces the recon shape so
+    # campaigns are visible early.
+    cve_hits = [e for e, label in fam_labels if label == "cve-2026-5946-trigger"]
+    if cve_hits:
+        section("CVE-2026-5946 trigger candidates")
+        by_ip = collections.Counter(e["src_ip"] for e in cve_hits)
+        print(f"  total: {len(cve_hits)} queries from {len(by_ip)} unique IPs")
+        for ip, n in by_ip.most_common(10):
+            samples = [e for e in cve_hits if e["src_ip"] == ip][:3]
+            print(f"    {n:3d}x {ip}")
+            for e in samples:
+                rd = "RD=1" if e.get("flags", 0) & FLAG_RD else "RD=0"
+                print(
+                    f"        {e.get('qclass_name','?')}/{e.get('qtype_name','?'):<6} "
+                    f"{e.get('opcode','?'):<6} {rd}  {e.get('qname','')!r}"
+                )
 
     # --- research scanners: acknowledged + REFUSED via exemptions.txt ---
     # We want these visible, not hidden, even though we REFUSE them at the

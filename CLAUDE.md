@@ -102,6 +102,10 @@ cert via DNS-01 over BIND nsupdate). All three are required.
   answerers to hosting providers. We REFUSE for known scanner-research
   zones (see `config/exemptions.txt`'s scanner-research block) to stay off
   the report, while still logging the probes. Don't remove those exemptions.
+  Complementary defense: `config/source_exemptions.txt` REFUSEs by source
+  CIDR, catching scanners that fingerprint via off-zone names — the qname
+  list alone misses `TXT google.com` / `TXT version.bind` probes from
+  known scanner ranges.
 ## Architecture (file map)
 
 - `honey_ns.py` — asyncio UDP + TCP DNS listeners, wire parsing,
@@ -113,10 +117,18 @@ cert via DNS-01 over BIND nsupdate). All three are required.
   response helpers, serialization. AA=1 / RA=0 lives here.
 - `squatter/dispatch.py` — full-bluff dispatch: exemption → class →
   AXFR/IXFR → meta-qtype → QTYPE-driven synthesis.
-- `squatter/exemptions.py` — text-file loader with SIGHUP reload.
-  Parse failures keep the previous list in effect.
-- `config/exemptions.txt` — REFUSED list. Bind-mounted into the
+- `squatter/exemptions.py` — qname-based REFUSED loader with SIGHUP
+  reload. Parse failures keep the previous list in effect.
+- `squatter/source_exemptions.py` — source-IP / CIDR REFUSED loader.
+  Layer 1 defense: REFUSE by source IP regardless of qname/qtype/qclass
+  (catches scanners that fingerprint via off-zone names like
+  `TXT google.com.` — qname exemption can't see those). Same fail-open
+  semantics + SIGHUP reload as the qname list. Handler name in events:
+  `exempt_source`.
+- `config/exemptions.txt` — qname REFUSED list. Bind-mounted into the
   container at `/etc/honeycow/`.
+- `config/source_exemptions.txt` — source-IP REFUSED list (CIDRs from
+  Shadowserver, Censys, Driftnet, ASERT). Same bind mount.
 - `static/index.html` — the HTTP closer page.
 - `caddy/Caddyfile` — TLS + reverse-proxy config (prod stack only).
 - `tools/healthcheck.py` — container healthcheck (SOA query against self).

@@ -41,6 +41,7 @@ import honey_logging
 from squatter import base, dispatch
 from squatter.budget import OutboundBudget
 from squatter.exemptions import ExemptionList
+from squatter.source_exemptions import SourceExemptionList
 
 DEFAULT_PORT = 53
 DEFAULT_HTTP_PORT = 80
@@ -48,6 +49,7 @@ DEFAULT_BIND_V4 = "0.0.0.0"
 DEFAULT_BIND_V6 = "::"
 DEFAULT_LOG_PATH = "/var/log/honeycow/events.jsonl"
 DEFAULT_EXEMPTION_PATH = "/etc/honeycow/exemptions.txt"
+DEFAULT_SOURCE_EXEMPTION_PATH = "/etc/honeycow/source_exemptions.txt"
 DEFAULT_STATIC_PATH = "/app/static/index.html"
 DEFAULT_TCP_TIMEOUT = 5.0
 DEFAULT_TCP_MAX_CONNS = 50
@@ -72,6 +74,7 @@ UDP_MAX = base.UDP_MAX
 
 LOG_PATH: Path = Path(DEFAULT_LOG_PATH)
 EXEMPTIONS: ExemptionList = ExemptionList()
+SOURCE_EXEMPTIONS: SourceExemptionList = SourceExemptionList()
 OUTBOUND_BUDGET: OutboundBudget = OutboundBudget(
     max_bytes=DEFAULT_OUTBOUND_BUDGET_BYTES,
     window_seconds=DEFAULT_OUTBOUND_BUDGET_WINDOW,
@@ -139,7 +142,7 @@ def _serialize(response: dns.message.Message, transport: str) -> tuple[bytes, bo
     return base.serialize_tcp(response), False
 
 
-def handle_wire(data: bytes, transport: str) -> tuple[
+def handle_wire(data: bytes, transport: str, src_ip: str = "") -> tuple[
     bytes, str, bool,
     dns.message.Message | None, dns.message.Message | None,
     str,
@@ -176,7 +179,9 @@ def handle_wire(data: bytes, transport: str) -> tuple[
         return wire, "FORMERR", truncated, query, response, "bad_qcount"
 
     try:
-        response, handler_name = dispatch.dispatch(query, EXEMPTIONS)
+        response, handler_name = dispatch.dispatch(
+            query, EXEMPTIONS, SOURCE_EXEMPTIONS, src_ip,
+        )
         wire, truncated = _serialize(response, transport)
     except Exception:  # pragma: no cover — defense in depth
         log.exception("dispatch crashed")
@@ -279,7 +284,9 @@ class UDPProtocol(asyncio.DatagramProtocol):
             ))
             return
 
-        wire, kind, truncated, query, response, handler = handle_wire(data, "udp")
+        wire, kind, truncated, query, response, handler = handle_wire(
+            data, "udp", src_ip,
+        )
         if not wire:
             _log_event(honey_logging.event(
                 event="query_drop",
@@ -437,7 +444,9 @@ async def handle_tcp(
                 ))
                 return
 
-            wire, kind, truncated, query, response, handler = handle_wire(data, "tcp")
+            wire, kind, truncated, query, response, handler = handle_wire(
+                data, "tcp", src_ip,
+            )
             if not wire:
                 _log_event(honey_logging.event(
                     event="query_drop",
@@ -645,6 +654,9 @@ def _load_config() -> dict:
         "exemption_path": os.environ.get(
             "HONEY_EXEMPTION_FILE", DEFAULT_EXEMPTION_PATH,
         ),
+        "source_exemption_path": os.environ.get(
+            "HONEY_SOURCE_EXEMPTION_FILE", DEFAULT_SOURCE_EXEMPTION_PATH,
+        ),
         "static_path": os.environ.get("HONEY_STATIC_INDEX", DEFAULT_STATIC_PATH),
     }
 
@@ -664,7 +676,7 @@ def main() -> int:
 
     cfg = _load_config()
 
-    global LOG_PATH, EXEMPTIONS, OUTBOUND_BUDGET
+    global LOG_PATH, EXEMPTIONS, SOURCE_EXEMPTIONS, OUTBOUND_BUDGET
     LOG_PATH = Path(cfg["log_path"])
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
 
@@ -687,6 +699,16 @@ def main() -> int:
         )
         EXEMPTIONS = ExemptionList()
 
+    source_exemption_path = Path(cfg["source_exemption_path"])
+    if source_exemption_path.is_file():
+        SOURCE_EXEMPTIONS = SourceExemptionList(source_exemption_path)
+    else:
+        log.info(
+            "no source exemption file at %s — running with empty list",
+            source_exemption_path,
+        )
+        SOURCE_EXEMPTIONS = SourceExemptionList()
+
     log.info(
         "squatting as %s (NS=%s, sinkhole_a=%s sinkhole_aaaa=%s)",
         base.DOMAIN.to_text(),
@@ -696,6 +718,10 @@ def main() -> int:
     )
     log.info("event log: %s", LOG_PATH)
     log.info("exemptions: %d entries from %s", len(EXEMPTIONS), exemption_path)
+    log.info(
+        "source exemptions: %d entries from %s",
+        len(SOURCE_EXEMPTIONS), source_exemption_path,
+    )
     log.info(
         "udp rate limit: enabled=%s rate=%s burst=%s",
         cfg["udp_ratelimit_enabled"],
@@ -723,11 +749,17 @@ def main() -> int:
         serve_task.cancel()
 
     def _sighup() -> None:
+        reloaded_any = False
         if EXEMPTIONS.path is not None:
             log.info("SIGHUP received, reloading exemptions")
             EXEMPTIONS.load()
-        else:
-            log.info("SIGHUP received, no exemption file configured — ignored")
+            reloaded_any = True
+        if SOURCE_EXEMPTIONS.path is not None:
+            log.info("SIGHUP received, reloading source exemptions")
+            SOURCE_EXEMPTIONS.load()
+            reloaded_any = True
+        if not reloaded_any:
+            log.info("SIGHUP received, no exemption files configured — ignored")
 
     loop.add_signal_handler(signal.SIGTERM, _shutdown)
     loop.add_signal_handler(signal.SIGINT, _shutdown)

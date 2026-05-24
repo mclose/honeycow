@@ -2,6 +2,7 @@
 
 Decision tree:
 
+  0. Source-IP exemption -> REFUSED (known scanner ranges; name-blind).
   1. Exemption list -> REFUSED (operators of complaining zones get peace).
   2. Class check     -> IN or CH allowed, others REFUSED.
   3. AXFR / IXFR     -> REFUSED (regardless of class — we are not a real zone).
@@ -33,6 +34,7 @@ import dns.rdatatype
 
 from squatter import base
 from squatter.exemptions import ExemptionList
+from squatter.source_exemptions import SourceExemptionList
 
 # `version.bind.` is the most famous CHAOS-class fingerprint query (RFC 4892
 # adjacent, BIND convention). When HONEY_VERSION_BIND_TXT is set, this exact
@@ -66,7 +68,10 @@ def _attach_authority_ns(
 
 
 def dispatch(
-    query: dns.message.Message, exemptions: ExemptionList,
+    query: dns.message.Message,
+    exemptions: ExemptionList,
+    source_exemptions: SourceExemptionList | None = None,
+    src_ip: str = "",
 ) -> tuple[dns.message.Message, str]:
     """Route a parsed query through the full-bluff squatter.
 
@@ -75,6 +80,13 @@ def dispatch(
     question = query.question[0]
     qname = question.name
     qtype = question.rdtype
+
+    if (
+        source_exemptions is not None
+        and src_ip
+        and source_exemptions.is_exempt(src_ip)
+    ):
+        return base.refused(query), "exempt_source"
 
     if exemptions.is_exempt(qname):
         return base.refused(query), "exempt"

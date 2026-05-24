@@ -209,3 +209,16 @@
 # --- CyberGreen / CyberResilience -----------------------------------------
 # Observed probing `cyberresilience.io`. /32 only — no published CIDR list.
 134.209.86.24/32
+
+
+# --- Abusive netblocks (Spamhaus DROP / RBL-listed) -----------------------
+# Not research scanners — netblocks whose reputation is already burned at
+# the routing layer. Listing them here costs us nothing (we learn nothing
+# from their probes) and trims wasted synth bytes + report noise.
+#
+# AS60223 NETIFACE (Netiface Limited, GB / NL). Whole /24 observed
+# 2026-05-24 running `A google.com.` open-resolver canaries from four
+# IPs (.3, .200, .202, .203 — 256 queries in 24h, ~74% of CT-spike
+# "new IPs"). Spamhaus SBL+DROP (SBL692424), Mailspike, UCEProtect L2.
+# No PTRs.
+185.242.3.0/24

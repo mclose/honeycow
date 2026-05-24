@@ -1,0 +1,211 @@
+# Honeycow source-IP exemption list — one IP or CIDR per line.
+# Any DNS query from these source addresses returns REFUSED regardless
+# of qname/qtype/qclass (so CHAOS-class probes, off-zone TXT probes,
+# bind-chaos fingerprints, etc. all get the same boring REFUSED a
+# regular off-zone authoritative would return).
+#
+# Comments start with '#'; blank lines are ignored. Both IPv4 and IPv6
+# are accepted; bare addresses are equivalent to /32 (v4) or /128 (v6).
+#
+# Edit this file and run:
+#   docker kill -s HUP honeycow
+# to reload without restarting the container.
+#
+# Why this exists: the qname-based exemption list in exemptions.txt only
+# catches scanners that probe their own canonical zone (e.g. Shadowserver
+# asking for `dnsscan.shadowserver.org`). When a scanner fingerprints us
+# via an unrelated qname (`TXT google.com`, `TXT version.bind`, etc.) we
+# would otherwise answer — and that "yes I'm an open resolver" answer is
+# exactly what gets fed into hosting-provider abuse pipelines. Refusing
+# at the source IP closes that gap.
+#
+# All entries below are sourced from each organization's *published*
+# scanner-IP documentation. Refresh periodically; lists drift.
+
+
+# --- Shadowserver Foundation ----------------------------------------------
+# https://www.shadowserver.org/ — scanner sources from the MISP warninglist
+# (curated from Shadowserver's published infrastructure on AS22168 / HE.net).
+# These are the same /24s our reflection-attempt probes spoofed against
+# (65.49.1.0/24, 216.218.206.0/24) — keep them quiet first.
+184.105.139.68/31
+184.105.139.71/32
+184.105.139.72/29
+184.105.139.80/28
+184.105.139.96/28
+184.105.139.112/29
+184.105.139.120/30
+184.105.139.124/31
+184.105.139.126/32
+184.105.247.195/32
+184.105.247.196/32
+184.105.247.198/31
+184.105.247.200/32
+184.105.247.202/31
+184.105.247.204/32
+184.105.247.206/31
+184.105.247.208/32
+184.105.247.210/31
+184.105.247.212/32
+184.105.247.214/31
+184.105.247.216/32
+184.105.247.218/31
+184.105.247.220/32
+184.105.247.222/31
+184.105.247.224/32
+184.105.247.226/31
+184.105.247.228/32
+184.105.247.230/31
+184.105.247.232/32
+184.105.247.234/31
+184.105.247.236/32
+184.105.247.238/31
+184.105.247.240/32
+184.105.247.242/31
+184.105.247.244/32
+184.105.247.246/31
+184.105.247.248/32
+184.105.247.250/31
+184.105.247.252/32
+184.105.247.254/32
+216.218.206.67/32
+216.218.206.68/30
+216.218.206.72/29
+216.218.206.80/28
+216.218.206.96/28
+216.218.206.112/29
+216.218.206.120/30
+216.218.206.124/31
+216.218.206.126/32
+64.62.156.10/31
+64.62.156.12/30
+64.62.156.16/28
+64.62.156.32/27
+64.62.156.64/26
+64.62.156.128/26
+64.62.156.192/27
+64.62.156.224/29
+64.62.197.2/31
+64.62.197.4/30
+64.62.197.8/29
+64.62.197.16/28
+64.62.197.32/27
+64.62.197.64/26
+64.62.197.128/26
+64.62.197.192/27
+64.62.197.224/28
+64.62.197.240/31
+65.49.1.10/31
+65.49.1.12/30
+65.49.1.16/28
+65.49.1.32/27
+65.49.1.64/26
+65.49.1.128/26
+65.49.1.192/27
+65.49.1.224/28
+65.49.1.240/31
+65.49.20.66/31
+65.49.20.68/30
+65.49.20.72/29
+65.49.20.80/28
+65.49.20.96/28
+65.49.20.112/29
+65.49.20.120/30
+65.49.20.124/31
+65.49.20.126/32
+74.82.47.2/31
+74.82.47.4/30
+74.82.47.8/29
+74.82.47.16/28
+74.82.47.32/28
+74.82.47.48/29
+74.82.47.56/30
+74.82.47.60/31
+74.82.47.62/32
+
+
+# --- Censys ----------------------------------------------------------------
+# https://docs.censys.com/docs/opt-out-of-data-collection
+# The CensysInspect user agent gets caught at the HTTP closer already; this
+# is the DNS-side defense and the source set Censys publishes for opt-out.
+66.132.148.0/24
+66.132.153.0/24
+66.132.159.0/24
+66.132.172.0/24
+66.132.186.0/24
+66.132.195.0/24
+66.132.224.0/24
+162.142.125.0/24
+167.94.138.0/24
+167.94.145.0/24
+167.94.146.0/24
+167.248.133.0/24
+199.45.154.0/24
+199.45.155.0/24
+206.168.34.0/24
+206.168.35.0/24
+2602:80d:1000:b0cc:e::/80
+2602:80d:1003::/112
+2602:80d:1004::/112
+2620:96:e000:b0cc:e::/80
+
+
+# --- Driftnet / internet-measurement.com / Project25499 -------------------
+# https://internet-measurement.com/ — the "Driftnet IP Ranges" page.
+# Observed in our 48h window probing *.dnscheck.internet-measurement.com.
+87.236.176.0/24
+185.247.137.0/24
+193.163.125.0/24
+195.96.139.0/24
+45.55.151.3/32
+45.55.153.86/32
+45.55.158.168/32
+45.55.185.224/32
+45.55.186.92/32
+64.227.99.138/32
+64.227.108.146/32
+64.227.109.89/32
+64.227.110.161/32
+107.170.65.169/32
+128.199.8.140/32
+157.245.243.118/32
+157.245.245.246/32
+159.65.216.50/32
+159.65.219.252/32
+162.243.114.171/32
+162.243.116.182/32
+162.243.208.127/32
+167.99.234.119/32
+192.241.179.235/32
+2a06:4880::/29
+2604:a880:0:202a::b41:8000/124
+2604:a880:0:202a::b41:a000/124
+2604:a880:0:202a::b41:b000/124
+2604:a880:0:202a::b42:d000/124
+2604:a880:0:202a::b42:e000/124
+2604:a880:4:1d0::2fa6:a000/124
+2604:a880:4:1d0::2fa6:b000/124
+2604:a880:4:1d0::2fa6:c000/124
+2604:a880:4:1d0::2fa6:d000/124
+2604:a880:4:1d0::2fa6:e000/124
+2604:a880:400:d1::91e4:a000/124
+2604:a880:400:d1::91e4:b000/124
+2604:a880:400:d1::91e4:c000/124
+2604:a880:400:d1::91e4:d000/124
+2604:a880:400:d1::91e4:e000/124
+2604:a880:800:14::5633:8000/124
+2604:a880:800:14::5633:9000/124
+2604:a880:800:14::5633:a000/124
+2604:a880:800:14::5633:b000/124
+2604:a880:800:14::5633:c000/124
+
+
+# --- NetScout ASERT / dnsresearch -----------------------------------------
+# No public CIDR list; these are /32s observed in our own logs probing
+# *.asertdnsresearch.com. Add more as they appear in morning_report.
+146.88.241.110/32
+
+
+# --- CyberGreen / CyberResilience -----------------------------------------
+# Observed probing `cyberresilience.io`. /32 only — no published CIDR list.
+134.209.86.24/32

@@ -83,3 +83,37 @@ example.net
 # RFC 4193 ULA + IPv6 loopback reverse zones
 d.f.ip6.arpa
 0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa
+
+# --- Canonical real-world authority zones (open-resolver tells) -----------
+# Scanners fingerprint open resolvers by sending TXT/A queries for famous
+# zones they know we are NOT authoritative for (`TXT google.com.`,
+# `TXT cloudflare.com.`, etc.). A real off-zone authoritative would
+# return REFUSED. Without this list we synthesize an answer — the textbook
+# "yes I'm an open resolver" signature that gets fed into
+# DigitalOcean/Shadowserver-style abuse pipelines. REFUSE-ing here costs
+# us nothing legitimate and removes the loudest signal.
+google.com
+google.co.uk
+google-analytics.com
+cloudflare.com
+cisco.com
+microsoft.com
+amazon.com
+apple.com
+facebook.com
+netflix.com
+oracle.com
+samsung.com
+calendly.com
+uber.com
+yelp.com
+etsy.com
+ft.com
+marriott.com
+trendmicro.com
+
+# NOTE: bind-chaos fingerprint names (version.bind / hostname.bind /
+# id.server / authors.bind) are *intentionally* not in this list — they
+# are the deliberate calling-card fingerprint (see HONEY_VERSION_BIND_TXT
+# and the synth_txt_ch_version_bind handler). Source-IP exemption silences
+# them for known scanner ranges; we keep them answering for the long tail.

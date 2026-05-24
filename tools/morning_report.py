@@ -347,6 +347,17 @@ def render(
             osz = f"  ({oversized[ip]} oversized)" if oversized[ip] else ""
             print(f"    {n:4d}  {ip}{osz}")
 
+    # --- source-IP exemption hits (Layer 1 defense visibility) ---
+    section("source-IP exemption hits (REFUSED by source CIDR)")
+    src_exempt = [e for e in ext if e.get("handler") == "exempt_source"]
+    if not src_exempt:
+        print("  (none in window)")
+    else:
+        by_ip = collections.Counter(e["src_ip"] for e in src_exempt)
+        print(f"  total: {len(src_exempt)} queries from {len(by_ip)} unique IPs")
+        for ip, n in by_ip.most_common(10):
+            print(f"    {n:4d}  {ip}")
+
     # --- scanner fingerprint families ---
     section("DNS probe families")
     fam = collections.Counter(classify_query(e.get("qname", "")) for e in ext)

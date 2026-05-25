@@ -108,6 +108,42 @@ def load_our_ips(path: Path | None, extra: list[str]) -> list[ipaddress._BaseNet
     return nets
 
 
+def load_research_cidrs(path: Path | None) -> list[ipaddress._BaseNetwork]:
+    """Load known-research scanner CIDRs (one per line, # comments) so the
+    report can tell research probes apart from un-attributed traffic.
+
+    Same format as `config/source_exemptions.txt`. Returns [] if path is
+    None or unreadable; the report still works, just without the split.
+    """
+    if path is None:
+        return []
+    nets: list[ipaddress._BaseNetwork] = []
+    try:
+        text = path.read_text()
+    except OSError as exc:
+        print(f"[research-cidrs] cannot read {path}: {exc}", file=sys.stderr)
+        return nets
+    for line in text.splitlines():
+        entry = line.split("#", 1)[0].strip()
+        if not entry:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError as exc:
+            print(f"[research-cidrs] skipping {entry!r}: {exc}", file=sys.stderr)
+    return nets
+
+
+def ip_in_nets(ip: str, nets: list[ipaddress._BaseNetwork]) -> bool:
+    if not nets:
+        return False
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return any(addr in net for net in nets)
+
+
 CHAOS_LEGIT_QTYPES = {"TXT", "NS"}
 FLAG_RD = 0x0100  # DNS header RD bit
 
@@ -264,8 +300,10 @@ def render(
     ufw: list[dict],
     cert_issued: datetime | None,
     our_nets: list[ipaddress._BaseNetwork] | None = None,
+    research_nets: list[ipaddress._BaseNetwork] | None = None,
 ) -> None:
     our_nets = our_nets or []
+    research_nets = research_nets or []
     queries = [e for e in events if e.get("event") == "query"]
     # "external" = not private/loopback. Self-test = external AND in our_nets.
     # We split them so triage focuses on "not us" traffic, while keeping
@@ -343,39 +381,64 @@ def render(
                 preview = q if len(q) <= 70 else q[:67] + "..."
                 print(f"    {n:4d}  {preview}")
 
-    # --- reflection-attempt traffic ---
+    # --- unsolicited DNS responses arriving at :53 ---
     # query_drop events with src_port=53 and DROPPED_QR / oversized_datagram
-    # mean: an attacker spoofed honeycow's IP as the source, sent a query
-    # to some authoritative NS, and that NS sent its response to us. The
-    # NS source IP is the *reflector* (often unwitting); honeycow is the
-    # spoofed victim. This is high-signal forensic data — it's literally
-    # somebody else's reflection-amplification mapping scan caught in the
-    # act, with our IP as the target. Honeycow drops these correctly
-    # (QR bit set / >512 bytes), but the *fact that they arrived* is what
-    # we want to see.
-    section("reflection-attempt traffic (someone spoofed our IP as victim)")
-    reflections = [
+    # are inbound packets with the QR (response) bit set — i.e. responses
+    # to queries we never issued. Two distinct shapes share this signature:
+    #
+    #   1. Research-scanner probes (Shadowserver et al.) sending us crafted
+    #      "responses" to test whether we accept stray packets on :53 — an
+    #      open-resolver / cache-poisonability check. Source IP sits in a
+    #      known-research CIDR.
+    #   2. Genuine reflection attempts where an attacker spoofed our IP as
+    #      the victim, queried some auth NS, and that NS sent its real
+    #      response to us. Source IP is some unwitting auth NS.
+    #
+    # We can't tell them apart from packet content alone, but the source
+    # CIDR is a strong tell. Either way honeycow correctly drops them via
+    # the qr_set handler. The high-signal sub-bucket is `oversized_datagram`
+    # without a research CIDR — that's the shape most consistent with a
+    # real reflection-amplification map.
+    section("unsolicited DNS responses arriving at :53 "
+            "(QR=1 inbound — scanner probes and/or reflection-victim)")
+    inbound_qr = [
         e for e in drops
         if e.get("src_port") == 53
         and e.get("drop_reason") in ("DROPPED_QR", "oversized_datagram")
     ]
-    if not reflections:
+    if not inbound_qr:
         print("  (none in window)")
     else:
-        reflectors = collections.Counter(e["src_ip"] for e in reflections)
-        oversized = collections.Counter(
-            e["src_ip"] for e in reflections
-            if e.get("drop_reason") == "oversized_datagram"
-        )
-        max_size = max((e.get("raw_len", 0) for e in reflections), default=0)
-        print(f"  total response packets: {len(reflections)}")
-        print(f"  distinct reflector IPs: {len(reflectors)}")
-        print(f"  largest reflected response: {max_size}B  "
-              f"({'amplification potential' if max_size > 512 else 'within UDP cap'})")
-        print("  top reflectors:")
-        for ip, n in reflectors.most_common(10):
-            osz = f"  ({oversized[ip]} oversized)" if oversized[ip] else ""
-            print(f"    {n:4d}  {ip}{osz}")
+        research = [e for e in inbound_qr if ip_in_nets(e["src_ip"], research_nets)]
+        unknown = [e for e in inbound_qr if not ip_in_nets(e["src_ip"], research_nets)]
+        oversized_all = [
+            e for e in inbound_qr if e.get("drop_reason") == "oversized_datagram"
+        ]
+        print(f"  total inbound QR=1 packets: {len(inbound_qr)} "
+              f"(research-CIDR: {len(research)}  unknown: {len(unknown)})")
+        if oversized_all:
+            oversized_unknown = [
+                e for e in oversized_all
+                if not ip_in_nets(e["src_ip"], research_nets)
+            ]
+            print(f"  oversized (>512B): {len(oversized_all)} total, "
+                  f"{len(oversized_unknown)} from non-research sources "
+                  f"(higher reflection-attempt signal)")
+        if research:
+            print("  research-scanner probes (cache-poisoning / open-resolver test):")
+            by_ip = collections.Counter(e["src_ip"] for e in research)
+            for ip, n in by_ip.most_common(10):
+                print(f"    {n:4d}  {ip}")
+        if unknown:
+            print("  unknown sources (possible reflection victim or untagged scanner):")
+            by_ip = collections.Counter(e["src_ip"] for e in unknown)
+            oversized_by_ip = collections.Counter(
+                e["src_ip"] for e in unknown
+                if e.get("drop_reason") == "oversized_datagram"
+            )
+            for ip, n in by_ip.most_common(10):
+                osz = f"  ({oversized_by_ip[ip]} oversized)" if oversized_by_ip[ip] else ""
+                print(f"    {n:4d}  {ip}{osz}")
 
     # --- source-IP exemption hits (Layer 1 defense visibility) ---
     section("source-IP exemption hits (REFUSED by source CIDR)")
@@ -519,6 +582,11 @@ def main() -> int:
     ap.add_argument("--our-ip", action="append", default=[],
                     help="IP or CIDR identifying our own infrastructure "
                          "(repeatable; merged with --our-ips-file)")
+    ap.add_argument("--research-cidrs-file", type=Path,
+                    default=Path("config/source_exemptions.txt"),
+                    help="file listing known-research scanner CIDRs (same format as "
+                         "config/source_exemptions.txt) so inbound QR=1 packets can "
+                         "be split between scanner probes and reflection-victim shape")
     args = ap.parse_args()
 
     since = datetime.now(tz=UTC) - timedelta(hours=args.hours)
@@ -529,6 +597,9 @@ def main() -> int:
             cert_issued = cert_issued.replace(tzinfo=UTC)
 
     our_nets = load_our_ips(args.our_ips_file, args.our_ip)
+    research_nets = load_research_cidrs(
+        args.research_cidrs_file if args.research_cidrs_file.exists() else None,
+    )
 
     events = load_events(args.events, since)
     ufw = parse_ufw(args.ufw, since) if args.ufw else []
@@ -537,7 +608,9 @@ def main() -> int:
           f"(since {since.isoformat()})")
     if our_nets:
         print(f"# self-test filter: {len(our_nets)} network(s) loaded")
-    render(events, ufw, cert_issued, our_nets=our_nets)
+    if research_nets:
+        print(f"# research-CIDR filter: {len(research_nets)} network(s) loaded")
+    render(events, ufw, cert_issued, our_nets=our_nets, research_nets=research_nets)
     return 0
 
 

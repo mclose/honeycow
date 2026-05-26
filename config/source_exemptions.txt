@@ -222,3 +222,24 @@
 # "new IPs"). Spamhaus SBL+DROP (SBL692424), Mailspike, UCEProtect L2.
 # No PTRs.
 185.242.3.0/24
+
+# AS205759 GHOSTYNETWORKS (Ghosty Networks LLC, US-registered / PK-located).
+# Entire announced footprint listed preemptively 2026-05-26 after 43.228.157.74
+# was observed running 128x `A google.com.` open-resolver canaries in 24h —
+# same fingerprint shape as the AS60223 burst on 2026-05-24.
+#
+# Mixed-provenance footprint (three RIRs, two third-party-named APNIC blocks):
+#   43.228.157.0/24   APNIC 2015-10-14  "Masha Kashi"            SG  ← observed
+#   36.255.97.0/24    APNIC 2020-12-22  "Kill Ping administrator" PH
+#   64.89.160.0/23    ARIN  2026-01-25  Ghosty Networks LLC          (covers .160 + .161)
+#   46.151.182.0/24   RIPE  2026-05-02  GHOSTYNETWORKS-MNT       US
+#   83.142.209.0/24   RIPE  2026-05-02  GHOSTYNETWORKS-MNT       US
+#
+# The operator chose the third-party-named APNIC block for the probe campaign
+# (plausible deniability shape) and is freshly spinning up RIPE/ARIN space —
+# three /24s registered in the last 4 months. Lump-listed.
+36.255.97.0/24
+43.228.157.0/24
+46.151.182.0/24
+64.89.160.0/23
+83.142.209.0/24

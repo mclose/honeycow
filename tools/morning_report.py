@@ -38,7 +38,21 @@ from pathlib import Path
 
 # ---- classifiers -----------------------------------------------------------
 
-BIND_CHAOS = {"version.bind.", "hostname.bind.", "id.server.", "authors.bind."}
+# Well-known server-fingerprint qnames probed in the CHAOS class (and the
+# occasional HESIOD variant). Querying these is the *legitimate* non-IN-class
+# use against us — banner recon, the oldest DNS fingerprinting trick there is.
+# Recognize them generously (RD bit and qtype be damned) so a plain
+# `version.bind` probe doesn't get promoted into the CVE bucket just because a
+# sloppy scanner left RD=1 on or asked with qtype A.
+BIND_CHAOS = {
+    "version.bind.",
+    "hostname.bind.",
+    "id.server.",
+    "authors.bind.",
+    "version.server.",
+    "hostname.server.",
+    "id.bind.",
+}
 
 # Canary qnames used by open-resolver scanners to detect whether a host
 # will answer recursively for names it isn't authoritative for. These
@@ -144,16 +158,13 @@ def ip_in_nets(ip: str, nets: list[ipaddress._BaseNetwork]) -> bool:
     return any(addr in net for net in nets)
 
 
-CHAOS_LEGIT_QTYPES = {"TXT", "NS"}
 FLAG_RD = 0x0100  # DNS header RD bit
 
 
 def classify_query(event: dict) -> str:
     qname = event.get("qname", "")
     qclass = event.get("qclass_name", "IN")
-    qtype = event.get("qtype_name", "")
     opcode = event.get("opcode", "QUERY")
-    rd_set = bool(event.get("flags", 0) & FLAG_RD)
 
     if not qname:
         return "empty"
@@ -161,19 +172,20 @@ def classify_query(event: dict) -> str:
     banner_qname = low in BIND_CHAOS
 
     # Non-IN classes (CHAOS, HESIOD) have one legitimate use against us:
-    # CHAOS TXT/NS banner probes (`version.bind`, `id.server`, ...). Any
-    # *other* shape in a non-IN class matches the CVE-2026-5946 trigger
-    # pattern — non-IN class used in an IN-only context (recursion request,
-    # IN-typical qtype, non-QUERY opcode, or unexpected qname).
+    # banner-fingerprint probes for a known server-info qname (`version.bind`,
+    # `id.server`, ...). Treat those as `chaos-banner` regardless of the RD bit
+    # or qtype — RD=1 on a CHAOS query is sloppy-but-ubiquitous scanner default,
+    # not exploit intent, and `CH/A version.bind.` is still plainly recon.
+    #
+    # Reserve `cve-2026-5946-trigger` for what the CVE is actually about: a
+    # non-IN-class query whose qname is NOT a known banner name (e.g.
+    # `CH/A honeycow.net.`, `HS/A a.`, `CH/TXT www.stage.`), or a non-IN query
+    # with a non-QUERY opcode — the shapes that exercise BIND's non-IN-class
+    # code path rather than its banner-response path.
     if qclass in {"CH", "HS"}:
-        chaos_banner = (
-            qclass == "CH"
-            and banner_qname
-            and qtype in CHAOS_LEGIT_QTYPES
-            and not rd_set
-            and opcode == "QUERY"
-        )
-        return "chaos-banner" if chaos_banner else "cve-2026-5946-trigger"
+        if banner_qname and opcode == "QUERY":
+            return "chaos-banner"
+        return "cve-2026-5946-trigger"
 
     # IN-class banner-qname queries (`TXT version.bind` in class IN —
     # scanners that don't bother setting the chaos class). Same category

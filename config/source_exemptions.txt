@@ -216,12 +216,18 @@
 # the routing layer. Listing them here costs us nothing (we learn nothing
 # from their probes) and trims wasted synth bytes + report noise.
 #
-# AS60223 NETIFACE (Netiface Limited, GB / NL). Whole /24 observed
-# 2026-05-24 running `A google.com.` open-resolver canaries from four
-# IPs (.3, .200, .202, .203 — 256 queries in 24h, ~74% of CT-spike
-# "new IPs"). Spamhaus SBL+DROP (SBL692424), Mailspike, UCEProtect L2.
-# No PTRs.
+# AS60223 NETIFACE (Netiface Limited, GB / NL). 185.242.3.0/24 observed
+# 2026-05-24 running `A google.com.` / `TXT google.com.` open-resolver
+# canaries from four IPs (.3, .200, .202, .203 — 256 queries in 24h,
+# ~74% of CT-spike "new IPs"). Spamhaus SBL+DROP (SBL692424), Mailspike,
+# UCEProtect L2. No PTRs.
+#
+# Whole announced footprint listed preemptively (Ghosty-style, see below) —
+# AS60223 announces 2 /24s across two RIRs, same operator:
+#   185.242.3.0/24    RIPE  2026-01-27  FELCLOUDNET-MNT          (NL)  ← observed
+#   23.132.164.0/24   ARIN  2025-01-17  Netiface America, Inc.   (US)        (abuse@nfx.rip)
 185.242.3.0/24
+23.132.164.0/24
 
 # AS205759 GHOSTYNETWORKS (Ghosty Networks LLC, US-registered / PK-located).
 # Entire announced footprint listed preemptively 2026-05-26 after 43.228.157.74

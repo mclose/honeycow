@@ -22,6 +22,7 @@ exemption list).
 - `docs/bootstrap.md` — host rebuild runbook
 - `docs/deployment.md` — operational detail
 - `docs/rationale.md` — design rationale
+- `docs/herd.md` — multi-VPS herd architecture (spec; not yet built)
 
 ## Deploy topology
 

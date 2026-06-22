@@ -19,12 +19,13 @@ in this module prints or renders — that stays in `morning_report.py`.
 
 from __future__ import annotations
 
+import argparse
 import collections
 import ipaddress
 import json
 import re
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 # ---- classifiers -----------------------------------------------------------
@@ -292,3 +293,333 @@ def bucket_v4_v6(ips: collections.Counter) -> tuple[int, int, int]:
         else:
             unknown += n
     return v4, v6, unknown
+
+
+# ---- digest emitter (cow-side edge map step) -------------------------------
+#
+# Each cow runs the classifier above at the edge and ships a compact per-hour
+# digest line instead of its full raw events.jsonl. The central report merges
+# digests (`morning_report --herd`) so report time is flat vs herd size and
+# never blocks on a slow/dead cow — Matthew's hard constraint. The full raw
+# log stays on the cow (capture-wide, redact-at-publish).
+#
+# Schema is deliberately O(unique keys/hour), not O(events): per-IP rollups
+# in `by_src`, Counters for paths/UAs/ports/families, and a small bounded set
+# of raw `exemplars` for the shapes that are worth the bytes (CVE triggers,
+# oversized inbound QR=1). One JSON object per line per hour bucket.
+
+DIGEST_SCHEMA = "honeycow-digest-v1"
+
+# Caps so a single noisy hour can't blow up a digest line. Exemplars are the
+# only place we keep whole raw events; everything else is aggregate counts.
+MAX_CVE_EXEMPLARS = 50
+MAX_QR_EXEMPLARS = 50
+MAX_QNAMES_PER_ORG = 10
+
+# Slim projection of a raw event kept as an exemplar — enough to eyeball the
+# probe shape without shipping the whole record.
+_EXEMPLAR_FIELDS = (
+    "ts", "src_ip", "src_port", "qname", "qtype_name", "qclass_name",
+    "opcode", "flags", "drop_reason", "response_kind", "response_bytes",
+)
+
+
+def _exemplar(event: dict) -> dict:
+    return {k: event[k] for k in _EXEMPLAR_FIELDS if k in event}
+
+
+def summarize_window(
+    events: list[dict],
+    ufw: list[dict],
+    *,
+    site_id: str,
+    hour_iso: str,
+    research_nets: list[ipaddress._BaseNetwork] | None = None,
+) -> dict:
+    """Aggregate one window of events + UFW lines into a single digest dict.
+
+    `events`/`ufw` are assumed pre-filtered to the window (e.g. one hour).
+    The result is JSON-serialisable and is the unit the collector merges.
+
+    Selftest/external splitting is intentionally NOT done here — a throwaway
+    cow may not know the operator's own-IP list. by_src keeps raw per-IP
+    counts so the central report can apply `--our-ips` at merge time. Family
+    and scanner rollups are computed over all non-internal queries (== the
+    report's `ext` when no --our-ips is given, which is the flagship default).
+    """
+    research_nets = research_nets or []
+
+    queries = [e for e in events if e.get("event") == "query"]
+    drops = [e for e in events if e.get("event") == "query_drop"]
+    http = [e for e in events if e.get("event") == "http_closer"]
+    ext = [e for e in queries if not is_private_or_loopback(e.get("src_ip", ""))]
+
+    # --- per-IP rollup (the backbone; report re-derives top-sources,
+    # correlation, v4/v6 splits, source-exempt counts from this) ---
+    by_src: dict[str, dict] = {}
+
+    def _slot(ip: str) -> dict:
+        s = by_src.get(ip)
+        if s is None:
+            s = {
+                "dns": 0, "http": 0, "ufw": 0,
+                "qtypes": collections.Counter(),
+                "qclasses": collections.Counter(),
+                "families": collections.Counter(),
+                "handlers": collections.Counter(),
+                "ufw_ports": collections.Counter(),
+                "first": None, "last": None,
+            }
+            by_src[ip] = s
+        return s
+
+    def _stamp(slot: dict, ts: str | None) -> None:
+        if not ts:
+            return
+        if slot["first"] is None or ts < slot["first"]:
+            slot["first"] = ts
+        if slot["last"] is None or ts > slot["last"]:
+            slot["last"] = ts
+
+    families: collections.Counter = collections.Counter()
+    for e in ext:
+        ip = e.get("src_ip", "")
+        slot = _slot(ip)
+        slot["dns"] += 1
+        slot["qtypes"][e.get("qtype_name", "?")] += 1
+        slot["qclasses"][e.get("qclass_name", "?")] += 1
+        fam = classify_query(e)
+        slot["families"][fam] += 1
+        families[fam] += 1
+        if e.get("handler"):
+            slot["handlers"][e["handler"]] += 1
+        _stamp(slot, e.get("ts"))
+
+    for e in http:
+        ip = e.get("client_ip") or e.get("src_ip") or ""
+        slot = _slot(ip)
+        slot["http"] += 1
+        _stamp(slot, e.get("ts"))
+
+    for u in ufw:
+        ip = u.get("src", "")
+        slot = _slot(ip)
+        slot["ufw"] += 1
+        if u.get("dpt"):
+            slot["ufw_ports"][f"{u.get('proto', '?').lower()}/{u['dpt']}"] += 1
+
+    # --- top-level Counters the report shows directly ---
+    http_paths: collections.Counter = collections.Counter(
+        e.get("path") for e in http
+    )
+    http_user_agents: collections.Counter = collections.Counter(
+        e.get("user_agent") for e in http
+    )
+    ufw_ports: collections.Counter = collections.Counter(
+        f"{u.get('proto', '?').lower()}/{u['dpt']}" for u in ufw if u.get("dpt")
+    )
+    source_exempt: collections.Counter = collections.Counter(
+        e.get("src_ip", "") for e in ext if e.get("handler") == "exempt_source"
+    )
+
+    # --- research scanners (REFUSED via exemptions, still observed) ---
+    research: dict[str, dict] = {}
+    for e in ext:
+        label = classify_research_scanner(e.get("qname", ""))
+        if label is None:
+            continue
+        org = research.setdefault(
+            label,
+            {"hits": 0, "refused": 0,
+             "src_ips": collections.Counter(), "qnames": set()},
+        )
+        org["hits"] += 1
+        if e.get("response_kind") == "REFUSED":
+            org["refused"] += 1
+        org["src_ips"][e.get("src_ip", "")] += 1
+        if len(org["qnames"]) < MAX_QNAMES_PER_ORG:
+            org["qnames"].add(e.get("qname", ""))
+
+    # --- unsolicited inbound QR=1 (scanner probe / reflection-victim) ---
+    inbound_qr = [
+        e for e in drops
+        if e.get("src_port") == 53
+        and e.get("drop_reason") in ("DROPPED_QR", "oversized_datagram")
+    ]
+    qr_research = [e for e in inbound_qr if ip_in_nets(e["src_ip"], research_nets)]
+    qr_oversized = [
+        e for e in inbound_qr if e.get("drop_reason") == "oversized_datagram"
+    ]
+    inbound = {
+        "total": len(inbound_qr),
+        "research": len(qr_research),
+        "unknown": len(inbound_qr) - len(qr_research),
+        "oversized_total": len(qr_oversized),
+        "oversized_unknown": sum(
+            1 for e in qr_oversized if not ip_in_nets(e["src_ip"], research_nets)
+        ),
+        "by_ip": dict(collections.Counter(e["src_ip"] for e in inbound_qr)),
+        "oversized_by_ip": dict(
+            collections.Counter(e["src_ip"] for e in qr_oversized)
+        ),
+    }
+
+    # --- exemplars: the only raw events we keep, bounded ---
+    cve_exemplars = [
+        _exemplar(e) for e in ext
+        if classify_query(e) == "cve-2026-5946-trigger"
+    ][:MAX_CVE_EXEMPLARS]
+    qr_exemplars = [_exemplar(e) for e in qr_oversized][:MAX_QR_EXEMPLARS]
+
+    def _jsonable_src(slot: dict) -> dict:
+        return {
+            "dns": slot["dns"], "http": slot["http"], "ufw": slot["ufw"],
+            "qtypes": dict(slot["qtypes"]),
+            "qclasses": dict(slot["qclasses"]),
+            "families": dict(slot["families"]),
+            "handlers": dict(slot["handlers"]),
+            "ufw_ports": dict(slot["ufw_ports"]),
+            "first": slot["first"], "last": slot["last"],
+        }
+
+    return {
+        "schema": DIGEST_SCHEMA,
+        "site_id": site_id,
+        "hour": hour_iso,
+        "totals": {
+            "events": len(events),
+            "dns_queries": len(queries),
+            "dns_external": len(ext),
+            "dns_drops": len(drops),
+            "http": len(http),
+            "ufw": len(ufw),
+        },
+        "families": dict(families),
+        "http_paths": dict(http_paths),
+        "http_user_agents": dict(http_user_agents),
+        "ufw_ports": dict(ufw_ports),
+        "source_exempt": dict(source_exempt),
+        "research_scanners": {
+            org: {
+                "hits": d["hits"], "refused": d["refused"],
+                "src_ips": dict(d["src_ips"]),
+                "qnames": sorted(d["qnames"]),
+            }
+            for org, d in research.items()
+        },
+        "inbound_qr": inbound,
+        "cve_exemplars": cve_exemplars,
+        "qr_exemplars": qr_exemplars,
+        "by_src": {ip: _jsonable_src(s) for ip, s in by_src.items()},
+    }
+
+
+def _hour_floor(ts: datetime) -> datetime:
+    return ts.replace(minute=0, second=0, microsecond=0)
+
+
+def iter_hourly_digests(
+    events: list[dict],
+    ufw: list[dict],
+    *,
+    site_id: str,
+    research_nets: list[ipaddress._BaseNetwork] | None = None,
+) -> list[dict]:
+    """Bucket events + UFW lines by UTC hour and summarise each bucket.
+
+    Events carry `_ts` (added by `load_events`); UFW dicts carry `ts` (added
+    by `parse_ufw`). Returns one digest dict per hour, oldest first.
+    """
+    ev_by_hour: dict[datetime, list[dict]] = collections.defaultdict(list)
+    for e in events:
+        ts = e.get("_ts")
+        if ts is None:
+            continue
+        ev_by_hour[_hour_floor(ts.astimezone(UTC))].append(e)
+
+    ufw_by_hour: dict[datetime, list[dict]] = collections.defaultdict(list)
+    for u in ufw:
+        ts = u.get("ts")
+        if ts is None:
+            continue
+        ufw_by_hour[_hour_floor(ts.astimezone(UTC))].append(u)
+
+    hours = sorted(set(ev_by_hour) | set(ufw_by_hour))
+    return [
+        summarize_window(
+            ev_by_hour.get(h, []),
+            ufw_by_hour.get(h, []),
+            site_id=site_id,
+            hour_iso=h.isoformat(),
+            research_nets=research_nets,
+        )
+        for h in hours
+    ]
+
+
+# ---- CLI -------------------------------------------------------------------
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(
+        description="Emit compact per-hour HoneyCow digest lines from raw logs.",
+    )
+    ap.add_argument("--events", required=True, type=Path,
+                    help="path to events.jsonl")
+    ap.add_argument("--ufw", type=Path, default=None,
+                    help="optional path to /var/log/ufw.log")
+    ap.add_argument("--out", type=Path, default=None,
+                    help="append digest lines here (default: stdout)")
+    ap.add_argument("--site-id", default=None,
+                    help="vantage-point id to stamp (default: $HONEY_SITE_ID)")
+    ap.add_argument("--hours", type=float, default=None,
+                    help="only summarise the last N hours (default: all)")
+    ap.add_argument("--research-cidrs-file", type=Path,
+                    default=Path("config/source_exemptions.txt"),
+                    help="known-research scanner CIDRs for inbound-QR split")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="show what would be written without touching --out")
+    args = ap.parse_args(argv)
+
+    import os
+    site_id = args.site_id if args.site_id is not None else os.environ.get(
+        "HONEY_SITE_ID", "",
+    ).strip()
+
+    since = datetime.min.replace(tzinfo=UTC)
+    if args.hours is not None:
+        since = datetime.now(tz=UTC) - timedelta(hours=args.hours)
+
+    research_nets = load_research_cidrs(
+        args.research_cidrs_file if args.research_cidrs_file.exists() else None,
+    )
+    events = load_events(args.events, since)
+    ufw = parse_ufw(args.ufw, since) if args.ufw else []
+    digests = iter_hourly_digests(
+        events, ufw, site_id=site_id, research_nets=research_nets,
+    )
+    lines = [json.dumps(d, ensure_ascii=False) for d in digests]
+
+    if args.dry_run:
+        dest = f"append to {args.out}" if args.out else "stdout"
+        print(
+            f"[dry-run] would emit {len(lines)} hourly digest line(s) "
+            f"(site_id={site_id!r}) -> {dest}",
+            file=sys.stderr,
+        )
+        for line in lines:
+            print(line)
+        return 0
+
+    if args.out:
+        with args.out.open("a", encoding="utf-8") as fh:
+            for line in lines:
+                fh.write(line + "\n")
+        print(f"wrote {len(lines)} digest line(s) to {args.out}", file=sys.stderr)
+    else:
+        for line in lines:
+            print(line)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

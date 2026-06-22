@@ -82,3 +82,39 @@ def test_event_handles_missing_query():
     )
     assert "qname" not in rec
     assert rec["drop_reason"] == "oversized_datagram"
+
+
+# --- herd site_id stamping (write_jsonl chokepoint) -------------------------
+
+
+def _read_lines(path):
+    import json
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+def test_write_jsonl_stamps_site_id_when_set(tmp_path, monkeypatch):
+    # SITE_ID is read once at import; patch the module attribute to simulate
+    # a cow with HONEY_SITE_ID set.
+    monkeypatch.setattr(honey_logging, "SITE_ID", "ams-01")
+    log_path = tmp_path / "events.jsonl"
+    honey_logging.write_jsonl(log_path, {"event": "query", "src_ip": "203.0.113.1"})
+    (rec,) = _read_lines(log_path)
+    assert rec["site_id"] == "ams-01"
+
+
+def test_write_jsonl_omits_site_id_when_empty(tmp_path, monkeypatch):
+    # Stock single-instance deploy: no site_id field, logs unchanged.
+    monkeypatch.setattr(honey_logging, "SITE_ID", "")
+    log_path = tmp_path / "events.jsonl"
+    honey_logging.write_jsonl(log_path, {"event": "query", "src_ip": "203.0.113.1"})
+    (rec,) = _read_lines(log_path)
+    assert "site_id" not in rec
+
+
+def test_write_jsonl_preserves_explicit_site_id(tmp_path, monkeypatch):
+    # An explicit per-record site_id must win over the process default.
+    monkeypatch.setattr(honey_logging, "SITE_ID", "ams-01")
+    log_path = tmp_path / "events.jsonl"
+    honey_logging.write_jsonl(log_path, {"event": "query", "site_id": "explicit"})
+    (rec,) = _read_lines(log_path)
+    assert rec["site_id"] == "explicit"

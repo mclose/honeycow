@@ -557,6 +557,156 @@ def iter_hourly_digests(
     ]
 
 
+# ---- digest merge (collector / report side) --------------------------------
+#
+# The central report reads many per-site digest.jsonl files and merges them
+# back into one aggregate with the same shape as a single digest (Counters
+# summed, by_src unioned). Report time is O(total unique keys), independent
+# of raw event volume — and a missing/slow cow just contributes nothing.
+
+
+def load_digests(paths: list[Path]) -> list[dict]:
+    """Load digest dicts from a list of files and/or directories.
+
+    Directories are scanned for `*.jsonl`. Lines that aren't valid JSON or
+    aren't our schema are skipped (a half-written tail line from an
+    in-flight rsync must never crash the report). Returns dicts in file
+    order; merge order doesn't matter.
+    """
+    files: list[Path] = []
+    for p in paths:
+        if p.is_dir():
+            files.extend(sorted(p.glob("*.jsonl")))
+        else:
+            files.append(p)
+    out: list[dict] = []
+    for f in files:
+        try:
+            text = f.read_text()
+        except OSError as exc:
+            print(f"[digests] cannot read {f}: {exc}", file=sys.stderr)
+            continue
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            if d.get("schema") == DIGEST_SCHEMA:
+                out.append(d)
+    return out
+
+
+def _merge_counter(dst: collections.Counter, src: dict | None) -> None:
+    if src:
+        dst.update(src)
+
+
+def merge_digests(digests: list[dict]) -> dict:
+    """Merge per-site/per-hour digests into one aggregate.
+
+    Same shape as a single digest's body plus herd provenance: `sites`
+    (per-site hour counts) and a `fan_out` map (src_ip -> set of sites it
+    was seen at) — the cross-vantage metric a single cow can't produce.
+    by_src `sites` records which vantage points saw each IP.
+    """
+    totals: collections.Counter = collections.Counter()
+    families: collections.Counter = collections.Counter()
+    http_paths: collections.Counter = collections.Counter()
+    http_user_agents: collections.Counter = collections.Counter()
+    ufw_ports: collections.Counter = collections.Counter()
+    source_exempt: collections.Counter = collections.Counter()
+    research: dict[str, dict] = {}
+    inbound = {
+        "total": 0, "research": 0, "unknown": 0,
+        "oversized_total": 0, "oversized_unknown": 0,
+        "by_ip": collections.Counter(), "oversized_by_ip": collections.Counter(),
+    }
+    cve_exemplars: list[dict] = []
+    qr_exemplars: list[dict] = []
+    by_src: dict[str, dict] = {}
+    sites: dict[str, int] = collections.Counter()
+
+    def _src_slot(ip: str) -> dict:
+        s = by_src.get(ip)
+        if s is None:
+            s = {
+                "dns": 0, "http": 0, "ufw": 0,
+                "qtypes": collections.Counter(),
+                "qclasses": collections.Counter(),
+                "families": collections.Counter(),
+                "handlers": collections.Counter(),
+                "ufw_ports": collections.Counter(),
+                "first": None, "last": None, "sites": set(),
+            }
+            by_src[ip] = s
+        return s
+
+    for d in digests:
+        site = d.get("site_id", "") or "(unset)"
+        sites[site] += 1
+        _merge_counter(totals, d.get("totals"))
+        _merge_counter(families, d.get("families"))
+        _merge_counter(http_paths, d.get("http_paths"))
+        _merge_counter(http_user_agents, d.get("http_user_agents"))
+        _merge_counter(ufw_ports, d.get("ufw_ports"))
+        _merge_counter(source_exempt, d.get("source_exempt"))
+
+        for org, od in (d.get("research_scanners") or {}).items():
+            tgt = research.setdefault(
+                org, {"hits": 0, "refused": 0,
+                      "src_ips": collections.Counter(), "qnames": set()},
+            )
+            tgt["hits"] += od.get("hits", 0)
+            tgt["refused"] += od.get("refused", 0)
+            _merge_counter(tgt["src_ips"], od.get("src_ips"))
+            tgt["qnames"].update(od.get("qnames") or [])
+
+        iq = d.get("inbound_qr") or {}
+        for k in ("total", "research", "unknown",
+                  "oversized_total", "oversized_unknown"):
+            inbound[k] += iq.get(k, 0)
+        _merge_counter(inbound["by_ip"], iq.get("by_ip"))
+        _merge_counter(inbound["oversized_by_ip"], iq.get("oversized_by_ip"))
+
+        cve_exemplars.extend(d.get("cve_exemplars") or [])
+        qr_exemplars.extend(d.get("qr_exemplars") or [])
+
+        for ip, s in (d.get("by_src") or {}).items():
+            slot = _src_slot(ip)
+            slot["dns"] += s.get("dns", 0)
+            slot["http"] += s.get("http", 0)
+            slot["ufw"] += s.get("ufw", 0)
+            _merge_counter(slot["qtypes"], s.get("qtypes"))
+            _merge_counter(slot["qclasses"], s.get("qclasses"))
+            _merge_counter(slot["families"], s.get("families"))
+            _merge_counter(slot["handlers"], s.get("handlers"))
+            _merge_counter(slot["ufw_ports"], s.get("ufw_ports"))
+            slot["sites"].add(site)
+            f, last = s.get("first"), s.get("last")
+            if f and (slot["first"] is None or f < slot["first"]):
+                slot["first"] = f
+            if last and (slot["last"] is None or last > slot["last"]):
+                slot["last"] = last
+
+    return {
+        "sites": dict(sites),
+        "totals": totals,
+        "families": families,
+        "http_paths": http_paths,
+        "http_user_agents": http_user_agents,
+        "ufw_ports": ufw_ports,
+        "source_exempt": source_exempt,
+        "research_scanners": research,
+        "inbound_qr": inbound,
+        "cve_exemplars": cve_exemplars,
+        "qr_exemplars": qr_exemplars,
+        "by_src": by_src,
+    }
+
+
 # ---- CLI -------------------------------------------------------------------
 
 def main(argv: list[str] | None = None) -> int:

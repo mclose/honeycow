@@ -53,9 +53,11 @@ try:
         ip_version,
         is_our_ip,
         is_private_or_loopback,
+        load_digests,
         load_events,
         load_our_ips,
         load_research_cidrs,
+        merge_digests,
         parse_ufw,
     )
 except ImportError:
@@ -68,9 +70,11 @@ except ImportError:
         ip_version,
         is_our_ip,
         is_private_or_loopback,
+        load_digests,
         load_events,
         load_our_ips,
         load_research_cidrs,
+        merge_digests,
         parse_ufw,
     )
 
@@ -348,12 +352,184 @@ def render(
             print(f"    {ip:39s}  {len(ip_queries)}x  {sample_qnames}")
 
 
+# ---- herd render (from merged digests) -------------------------------------
+
+def render_herd(
+    merged: dict,
+    our_nets: list[ipaddress._BaseNetwork] | None = None,
+    research_nets: list[ipaddress._BaseNetwork] | None = None,
+) -> None:
+    """Render a report from merged per-site digests.
+
+    Mirrors `render()`'s sections for every dimension the digest keeps, so a
+    herd report reads like a single-cow one. The our-IP-sensitive sections
+    (totals split, families, source-exempt, top sources) are recomputed from
+    `by_src` excluding `our_nets`, so `--our-ips` works at merge time exactly
+    as it does on raw events. Sections needing per-event detail not carried
+    in the digest (CT-log spike) are omitted in herd mode.
+    """
+    our_nets = our_nets or []
+    research_nets = research_nets or []
+    by_src = merged["by_src"]
+    totals = merged["totals"]
+
+    def _our(ip: str) -> bool:
+        return is_our_ip(ip, our_nets)
+
+    ext_ips = collections.Counter(
+        {ip: s["dns"] for ip, s in by_src.items() if s["dns"] and not _our(ip)}
+    )
+    selftest_ips = collections.Counter(
+        {ip: s["dns"] for ip, s in by_src.items() if s["dns"] and _our(ip)}
+    )
+    http_ips = collections.Counter(
+        {ip: s["http"] for ip, s in by_src.items() if s["http"]}
+    )
+    ufw_ips = collections.Counter(
+        {ip: s["ufw"] for ip, s in by_src.items() if s["ufw"]}
+    )
+
+    # our-sensitive rollups recomputed from by_src so --our-ips is honoured
+    families: collections.Counter = collections.Counter()
+    source_exempt: collections.Counter = collections.Counter()
+    for ip, s in by_src.items():
+        if _our(ip):
+            continue
+        families.update(s["families"])
+        n_exempt = s["handlers"].get("exempt_source", 0)
+        if n_exempt:
+            source_exempt[ip] += n_exempt
+
+    ext_count = sum(ext_ips.values())
+    selftest_count = sum(selftest_ips.values())
+
+    section("totals")
+    print(f"  events:        {totals.get('events', 0)}")
+    if our_nets:
+        print(f"  DNS queries:   {totals.get('dns_queries', 0)} "
+              f"(external: {ext_count}, self-test: {selftest_count})")
+    else:
+        print(f"  DNS queries:   {totals.get('dns_queries', 0)} "
+              f"(external: {ext_count})")
+    print(f"  DNS drops:     {totals.get('dns_drops', 0)}")
+    print(f"  HTTP closer:   {totals.get('http', 0)}")
+    print(f"  UFW log lines: {totals.get('ufw', 0)}")
+
+    section("IPv4 vs IPv6")
+    v4, v6, unk = bucket_v4_v6(ext_ips)
+    print(f"  external DNS queries — v4: {v4}  v6: {v6}  other: {unk}")
+    if our_nets:
+        v4s, v6s, unks = bucket_v4_v6(selftest_ips)
+        print(f"  self-test DNS queries — v4: {v4s}  v6: {v6s}  other: {unks}")
+    v4h, v6h, unkh = bucket_v4_v6(http_ips)
+    print(f"  HTTP closer (client_ip) — v4: {v4h}  v6: {v6h}  other: {unkh}")
+    v4u, v6u, unku = bucket_v4_v6(ufw_ips)
+    print(f"  UFW blocked  — v4: {v4u}  v6: {v6u}  other: {unku}")
+    reached_total, ufw_total = v4 + v6, v4u + v6u
+    if reached_total and ufw_total:
+        print(f"  v6 ingress check — v6 share of reached DNS: "
+              f"{100 * v6 / reached_total:.1f}%  "
+              f"v6 share of UFW: {100 * v6u / ufw_total:.1f}%")
+
+    # --- herd-only: cross-vantage fan-out ---
+    section("fan-out (sources seen at multiple vantage points)")
+    fan = sorted(
+        ((ip, sorted(s["sites"])) for ip, s in by_src.items()
+         if len(s["sites"]) > 1),
+        key=lambda kv: -len(kv[1]),
+    )
+    sites = merged.get("sites", {})
+    print(f"  sites merged: {len(sites)} ({', '.join(sorted(sites)) or 'none'})")
+    if not fan:
+        print("  (no source seen at >1 site)")
+    for ip, where in fan[:15]:
+        print(f"    {ip:39s}  {len(where)} sites: {','.join(where)}")
+
+    section("source-IP exemption hits (REFUSED by source CIDR)")
+    if not source_exempt:
+        print("  (none in window)")
+    else:
+        print(f"  total: {sum(source_exempt.values())} queries from "
+              f"{len(source_exempt)} unique IPs")
+        for ip, n in source_exempt.most_common(10):
+            print(f"    {n:4d}  {ip}")
+
+    section("DNS probe families")
+    # Sort ties by name so a herd report is deterministic regardless of the
+    # order digests were merged in.
+    for k, n in sorted(families.items(), key=lambda kv: (-kv[1], kv[0])):
+        print(f"  {n:4d}  {k}")
+
+    cve = [e for e in merged.get("cve_exemplars", []) if not _our(e.get("src_ip", ""))]
+    if cve:
+        section("CVE-2026-5946 trigger candidates")
+        by_ip = collections.Counter(e["src_ip"] for e in cve)
+        print(f"  total: {len(cve)} queries from {len(by_ip)} unique IPs")
+        for ip, n in by_ip.most_common(10):
+            print(f"    {n:3d}x {ip}")
+            for e in [x for x in cve if x["src_ip"] == ip][:3]:
+                rd = "RD=1" if e.get("flags", 0) & FLAG_RD else "RD=0"
+                print(f"        {e.get('qclass_name', '?')}/"
+                      f"{e.get('qtype_name', '?'):<6} {e.get('opcode', '?'):<6} "
+                      f"{rd}  {e.get('qname', '')!r}")
+
+    section("research scanners (REFUSED via exemptions, still observed)")
+    research = merged.get("research_scanners", {})
+    if not research:
+        print("  (none in window)")
+    for org in sorted(research, key=lambda k: -research[k]["hits"]):
+        d = research[org]
+        src_ips = collections.Counter(d["src_ips"])
+        print(f"  {org:18s}  hits={d['hits']:3d}  refused={d['refused']:3d}  "
+              f"src_ips={len(src_ips)}")
+        for ip, n in src_ips.most_common(5):
+            print(f"      {n:3d}x {ip}")
+        for q in sorted(d["qnames"])[:3]:
+            print(f"      qname: {q}")
+
+    section("top external DNS sources (10)")
+    for ip, n in ext_ips.most_common(10):
+        print(f"  {n:4d}  {ip}  (v{ip_version(ip)})")
+
+    section("HTTP top paths (10)")
+    for p, n in collections.Counter(merged.get("http_paths", {})).most_common(10):
+        print(f"  {n:4d}  {p}")
+
+    section("HTTP top user agents (8)")
+    for ua, n in collections.Counter(
+        merged.get("http_user_agents", {})
+    ).most_common(8):
+        print(f"  {n:4d}  {ua!r}")
+
+    section("UFW: most-probed ports (10)")
+    for port, n in collections.Counter(merged.get("ufw_ports", {})).most_common(10):
+        print(f"  {n:4d}  {port}")
+
+    section("Correlated IPs (scanned unlistened ports AND probed HoneyCow)")
+    honeycow_ips = set(ext_ips) | set(http_ips)
+    overlap = sorted(
+        honeycow_ips & set(ufw_ips),
+        key=lambda ip: -(ext_ips[ip] + http_ips[ip] + ufw_ips[ip]),
+    )
+    if not overlap:
+        print("  (none)")
+    for ip in overlap[:15]:
+        ports = sorted(by_src[ip]["ufw_ports"])
+        preview = ",".join(ports[:6]) + ("…" if len(ports) > 6 else "")
+        print(f"  {ip:39s}  dns={ext_ips[ip]:3d}  http={http_ips[ip]:3d}  "
+              f"ufw={ufw_ips[ip]:3d}  ports=[{preview}]")
+
+
 # ---- main ------------------------------------------------------------------
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--events", required=True, type=Path,
+    ap.add_argument("--events", type=Path, default=None,
                     help="path to events.jsonl (or a copy of it)")
+    ap.add_argument("--herd", type=Path, nargs="+", default=None,
+                    metavar="PATH",
+                    help="merge per-site digest.jsonl files/dirs instead of "
+                         "reading raw events (the collector-side herd report)")
     ap.add_argument("--ufw", type=Path, default=None,
                     help="optional path to /var/log/ufw.log")
     ap.add_argument("--hours", type=float, default=24.0,
@@ -373,17 +549,32 @@ def main() -> int:
                          "be split between scanner probes and reflection-victim shape")
     args = ap.parse_args()
 
+    if (args.events is None) == (args.herd is None):
+        ap.error("specify exactly one of --events (raw) or --herd (digests)")
+
+    our_nets = load_our_ips(args.our_ips_file, args.our_ip)
+    research_nets = load_research_cidrs(
+        args.research_cidrs_file if args.research_cidrs_file.exists() else None,
+    )
+
+    if args.herd is not None:
+        digests = load_digests(args.herd)
+        merged = merge_digests(digests)
+        print(f"# HoneyCow herd report — {len(digests)} digest line(s) "
+              f"from {len(merged['sites'])} site(s)")
+        if our_nets:
+            print(f"# self-test filter: {len(our_nets)} network(s) loaded")
+        if research_nets:
+            print(f"# research-CIDR filter: {len(research_nets)} network(s) loaded")
+        render_herd(merged, our_nets=our_nets, research_nets=research_nets)
+        return 0
+
     since = datetime.now(tz=UTC) - timedelta(hours=args.hours)
     cert_issued = None
     if args.cert_issued:
         cert_issued = datetime.fromisoformat(args.cert_issued)
         if cert_issued.tzinfo is None:
             cert_issued = cert_issued.replace(tzinfo=UTC)
-
-    our_nets = load_our_ips(args.our_ips_file, args.our_ip)
-    research_nets = load_research_cidrs(
-        args.research_cidrs_file if args.research_cidrs_file.exists() else None,
-    )
 
     events = load_events(args.events, since)
     ufw = parse_ufw(args.ufw, since) if args.ufw else []

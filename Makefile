@@ -219,6 +219,18 @@ report:  ## Morning report from /tmp/honeycow-analysis/{events.jsonl,ufw.log}
 		$(if $(CERT_ISSUED),--cert-issued $(CERT_ISSUED)) \
 		$(if $(wildcard $(OUR_IPS_FILE)),--our-ips-file $(OUR_IPS_FILE))
 
+# Collector-side herd report: merge per-site digests under $(HERD_DIR).
+HERD_DIR ?= /herd/incoming
+report-herd:  ## Herd report by merging per-site digests under $(HERD_DIR)
+	@tools/morning_report.py --herd $(HERD_DIR) \
+		$(if $(wildcard $(OUR_IPS_FILE)),--our-ips-file $(OUR_IPS_FILE))
+
+# Cow-side digest emitter: roll raw events into hourly digest lines.
+DIGEST_OUT ?= /tmp/honeycow-analysis/digest.jsonl
+digest:  ## Emit hourly digest lines from raw events (use DRY_RUN=1 to preview)
+	@tools/honeycow_digest.py --events $(EVENTS) --ufw $(UFW) \
+		--out $(DIGEST_OUT) $(if $(DRY_RUN),--dry-run)
+
 # ---- housekeeping --------------------------------------------------------
 
 clean:  ## Remove caches and build artifacts

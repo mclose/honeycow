@@ -90,3 +90,36 @@ def test_in_class_banner_qname_is_banner_not_cve():
 
 def test_empty_qname():
     assert classify_query(_ev("", "CH", "TXT")) == "empty"
+
+
+# --- herd render (PR-D) -----------------------------------------------------
+
+def test_render_herd_smoke(capsys):
+    """A merged digest renders the herd report without raw events."""
+    from tools import morning_report
+    from tools.honeycow_digest import iter_hourly_digests, merge_digests
+
+    events = [
+        _ev_q("45.33.12.1", "x.example."),
+        _ev_q("45.33.12.1", "version.bind.", qclass="CH"),
+        _ev_q("45.33.12.2", "honeycow.net.", qclass="CH"),
+    ]
+    merged = merge_digests(iter_hourly_digests(events, [], site_id="ams-01"))
+    morning_report.render_herd(merged)
+    out = capsys.readouterr().out
+    assert "=== totals ===" in out
+    assert "=== DNS probe families ===" in out
+    assert "=== fan-out" in out
+    assert "chaos-banner" in out
+    assert "cve-2026-5946-trigger" in out
+
+
+def _ev_q(src_ip, qname, qclass="IN", qtype="A"):
+    from datetime import datetime
+    return {
+        "event": "query", "src_ip": src_ip, "qname": qname,
+        "qclass_name": qclass, "qtype_name": qtype, "opcode": "QUERY",
+        "handler": "synth_a", "response_kind": "NOERROR",
+        "ts": "2026-06-22T14:05:00+00:00",
+        "_ts": datetime.fromisoformat("2026-06-22T14:05:00+00:00"),
+    }

@@ -151,3 +151,58 @@ def test_digest_merge_is_lossless_for_totals_and_families():
         total_ext += d["totals"]["dns_external"]
     assert dict(merged) == dict(direct)
     assert total_ext == len(events)
+
+
+# --- digest merge + load (PR-D) ---------------------------------------------
+
+
+def test_merge_sums_counters_and_tracks_fanout():
+    # Same IP seen at two sites; merge sums counts and records both sites.
+    d1 = digest.summarize_window(
+        [_q("45.33.12.1"), _q("45.33.12.1", qname="version.bind.",
+                                qclass="CH", qtype="TXT")],
+        [], site_id="ams-01", hour_iso="2026-06-22T14:00:00+00:00")
+    d2 = digest.summarize_window(
+        [_q("45.33.12.1")], [], site_id="nyc-02",
+        hour_iso="2026-06-22T14:00:00+00:00")
+    m = digest.merge_digests([d1, d2])
+    assert m["sites"] == {"ams-01": 1, "nyc-02": 1}
+    assert m["totals"]["dns_external"] == 3
+    assert m["families"]["other"] == 2
+    assert m["families"]["chaos-banner"] == 1
+    slot = m["by_src"]["45.33.12.1"]
+    assert slot["dns"] == 3
+    assert slot["sites"] == {"ams-01", "nyc-02"}  # fan-out = 2
+
+
+def test_load_digests_skips_junk_and_foreign_schema(tmp_path):
+    f = tmp_path / "a.jsonl"
+    good = digest.summarize_window([_q("45.33.12.1")], [], site_id="x",
+                                   hour_iso="2026-06-22T14:00:00+00:00")
+    import json
+    f.write_text(
+        json.dumps(good) + "\n"
+        + "not json at all\n"
+        + json.dumps({"schema": "something-else"}) + "\n"
+        + "\n",
+    )
+    loaded = digest.load_digests([tmp_path])  # directory scan
+    assert len(loaded) == 1
+    assert loaded[0]["schema"] == digest.DIGEST_SCHEMA
+
+
+def test_emit_merge_roundtrip_is_lossless():
+    # Raw events -> hourly digests -> merge must reproduce direct counts.
+    import collections
+    events = [
+        _q("45.33.12.1", ts="2026-06-22T14:05:00+00:00"),
+        _q("45.33.12.1", qname="version.bind.", qclass="CH", qtype="TXT",
+           ts="2026-06-22T14:40:00+00:00"),
+        _q("45.33.12.2", qname="honeycow.net.", qclass="CH", qtype="A",
+           ts="2026-06-22T15:05:00+00:00"),
+    ]
+    direct_fam = collections.Counter(digest.classify_query(e) for e in events)
+    merged = digest.merge_digests(
+        digest.iter_hourly_digests(events, [], site_id="x"))
+    assert dict(merged["families"]) == dict(direct_fam)
+    assert merged["totals"]["dns_external"] == len(events)

@@ -198,11 +198,16 @@ The herd unlocks sections a single cow cannot produce:
 Each step is verifiable before any new VPS is stood up:
 
 1. **Shared lib + `HONEY_SITE_ID` + digest emitter + `--herd` merge.**
-   Test against the flagship's existing raw log treated as a one-cow
-   herd. Correctness gate: a report built from the *digest* must
-   reproduce the *direct-from-raw* report's totals and family counts —
+   *(Done — `tools/honeycow_digest.py`, `make digest`, `make report-herd`.)*
+   Tested against the flagship's existing raw log treated as a one-cow
+   herd. Correctness gate met: a report built from the *digest*
+   reproduces the *direct-from-raw* report's totals and family counts —
    a losslessness check for the dimensions the digest keeps.
-2. **GHCR image in CI.** Verify with a local `docker pull` + `up`.
+2. **GHCR image in CI.** *(Done — `.github/workflows/image.yml` builds on
+   PR, publishes `ghcr.io/<owner>/honeycow:{latest,sha-<short>}` on merge
+   to main; linux/amd64; public package. Cows set `HONEY_IMAGE` to a
+   pinned SHA tag.)* One-time manual step: flip the GHCR package to public
+   after the first push.
 3. **`init-cow.sh` + CAA record + per-site Caddy cert.** Stand up cow
    #2 and confirm it self-provisions and self-certs.
 4. **`rrsync` collector + ship cron.** Wire telemetry; confirm

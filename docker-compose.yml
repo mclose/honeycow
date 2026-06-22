@@ -2,8 +2,12 @@ name: honeycow
 
 services:
   honey-ns:
+    # Flagship builds locally (HONEY_IMAGE unset -> honeycow:latest, tagged by
+    # the build). A herd cow sets HONEY_IMAGE to a pinned GHCR tag
+    # (ghcr.io/<owner>/honeycow:sha-xxxx) and runs a build-less compose so it
+    # pulls the prebuilt artifact instead of compiling on a throwaway VPS.
     build: .
-    image: honeycow:latest
+    image: ${HONEY_IMAGE:-honeycow:latest}
     container_name: honeycow
     restart: unless-stopped
     read_only: true

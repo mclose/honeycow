@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -24,13 +25,29 @@ SCHEMA_VERSION = 1
 
 log = logging.getLogger("honey_ns")
 
+# Herd identity. Each cow in the herd sets HONEY_SITE_ID (e.g. "ams-01") so
+# every event it emits is attributable to a vantage point once digests are
+# merged at the collector. Read once at import — it's process-global, one
+# value per container. Left empty on a stock single-instance deploy; when
+# empty we omit the field entirely so existing single-cow logs are byte-for-
+# byte unchanged and the merge tool can default the absent value to a label.
+SITE_ID = os.environ.get("HONEY_SITE_ID", "").strip()
+
 
 def now_iso() -> str:
     return datetime.datetime.now(datetime.UTC).isoformat()
 
 
 def write_jsonl(path: Path, record: dict[str, Any]) -> None:
-    """Append one JSON object per line. Logging must never crash service code."""
+    """Append one JSON object per line. Logging must never crash service code.
+
+    This is the single chokepoint every event passes through — DNS events
+    (via `event()`) and the HTTP closer's hand-built records alike — so it
+    is also where the herd `site_id` is stamped. `setdefault` means an
+    explicit per-record site_id (should one ever be passed) still wins.
+    """
+    if SITE_ID:
+        record.setdefault("site_id", SITE_ID)
     try:
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")

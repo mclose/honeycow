@@ -67,3 +67,54 @@ def test_exemptions_file_documented():
     text = (ROOT / "config" / "exemptions.txt").read_text()
     # Has the documentation header explaining format + reload.
     assert "SIGHUP" in text or "kill -HUP" in text or "#" in text
+
+
+# --- herd cow runtime (step 3) ----------------------------------------------
+
+
+def _strip_comments(text: str) -> str:
+    # Drop `#...` to end of line so assertions test real directives, not the
+    # prose that explains what the cow deliberately does NOT do.
+    return "\n".join(line.split("#", 1)[0] for line in text.splitlines())
+
+
+def test_cow_compose_exists_and_is_build_less():
+    text = _strip_comments((ROOT / "docker-compose.cow.yml").read_text())
+    # A cow PULLS a pinned image; it must not build (no source on the box).
+    assert "build:" not in text
+    assert "HONEY_IMAGE" in text
+    # honey-ns still publishes DNS; Caddy owns 80/443.
+    assert "53:53/udp" in text
+    assert "53:53/tcp" in text
+
+
+def test_cow_compose_requires_site_id():
+    # The cow's whole reason for existing is attributable digests, so the
+    # vantage-point id must be mandatory (errors if unset), not defaulted.
+    text = (ROOT / "docker-compose.cow.yml").read_text()
+    assert "HONEY_SITE_ID: ${HONEY_SITE_ID:?" in text
+
+
+def test_cow_stack_carries_no_dns01_secrets():
+    # Cert design is HTTP-01 self-issuance: zero secrets on a throwaway box.
+    # No acme.sh sidecar, no TSIG/nsupdate key in the actual cow config
+    # (comments that explain the *absence* of these are stripped first).
+    compose = _strip_comments((ROOT / "docker-compose.cow.yml").read_text()).lower()
+    caddy = _strip_comments((ROOT / "caddy" / "Caddyfile.cow").read_text()).lower()
+    for needle in ("acme.sh", "nsupdate", "tsig", "dns-01"):
+        assert needle not in compose, f"cow compose leaks {needle}"
+        assert needle not in caddy, f"cow Caddyfile leaks {needle}"
+
+
+def test_cow_caddyfile_http01_and_proxies_closer():
+    text = (ROOT / "caddy" / "Caddyfile.cow").read_text()
+    assert "{$HERD_FQDN}" in text          # per-cow hostname, env-substituted
+    assert "reverse_proxy honey-ns:80" in text
+    # No external cert files mounted (that's the flagship DNS-01 model).
+    assert "/certs/" not in text
+
+
+def test_base_compose_passes_site_id():
+    # Flagship passthrough so HONEY_SITE_ID actually reaches the container.
+    text = (ROOT / "docker-compose.yml").read_text()
+    assert "HONEY_SITE_ID: ${HONEY_SITE_ID:-}" in text

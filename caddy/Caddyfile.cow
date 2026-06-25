@@ -1,0 +1,41 @@
+# honeycow herd-cow Caddyfile.
+#
+# Unlike the flagship caddy/Caddyfile (certs managed externally by an
+# acme.sh DNS-01 sidecar serving a static explainer), a cow self-issues its
+# own cert via ACME HTTP-01 — no DNS provider, no TSIG key, zero secrets on
+# the disposable box. Caddy serves the ACME challenge on :80 itself, then
+# proxies everything to the honey-ns closer. The cow ships no static/ files;
+# its own hostname and the catch-all both serve honey-ns's closer page.
+#
+# {$HERD_FQDN} / {$ACME_EMAIL} are substituted from the container env (set in
+# docker-compose.cow.yml). init-cow.sh writes this file to the cow's
+# ./caddy/Caddyfile.
+#
+# PREREQUISITES (operator, before the cow can issue):
+#   1. CAA on herd.honeycow.net must permit HTTP-01:
+#        herd.honeycow.net. CAA 0 issue "letsencrypt.org; validationmethods=http-01"
+#   2. {$HERD_FQDN} must resolve (A/AAAA) to this cow's public IP, or Caddy's
+#      HTTP-01 validation will fail and retry until it does.
+
+{
+	email {$ACME_EMAIL}
+}
+
+# The cow's own herd hostname. No `tls` directive -> Caddy auto-issues and
+# auto-renews via ACME HTTP-01, then proxies to the closer so the same Python
+# code logs the request (and stamps site_id).
+{$HERD_FQDN} {
+	encode gzip zstd
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+	}
+	reverse_proxy honey-ns:80
+}
+
+# Catch-all for any other Host on :80 — the scanner closer, proxied straight
+# to honey-ns.
+http:// {
+	reverse_proxy honey-ns:80
+}

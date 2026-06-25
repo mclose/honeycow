@@ -89,6 +89,24 @@ per-cow throwaway domains would defeat the clustering but cost money and
 wiring per cow, which the budget does not allow. Most scanners are too
 unsophisticated to correlate; the property is documented, not mitigated.
 
+**Per-cow DNS (operator step):** HTTP-01 validates against the cow's
+hostname, so before (or shortly after) a cow boots, point its name at its
+public IP — zero secrets on the cow means it can't self-register:
+
+```text
+<site>.herd.honeycow.net.  A     <cow-ipv4>
+<site>.herd.honeycow.net.  AAAA  <cow-ipv6>   ; if the cow has v6
+```
+
+Caddy retries issuance until the name resolves, so a slight ordering race
+between boot and the DNS edit is self-healing.
+
+**Implemented (cow runtime):** `docker-compose.cow.yml` (build-less,
+pulls the pinned `HONEY_IMAGE`, honey-ns + Caddy only — no DNS-01 sidecar,
+no wire-monitoring) and `caddy/Caddyfile.cow` (HTTP-01 self-issuance for
+`{$HERD_FQDN}`, everything proxied to the honey-ns closer). The cow's
+`.env` and config files are rendered by `tools/init-cow.sh` (next).
+
 ### 3. Telemetry — edge map-reduce
 
 Each cow keeps its **full verbose `events.jsonl` locally** (capture

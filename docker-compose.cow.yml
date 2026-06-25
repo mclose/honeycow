@@ -1,0 +1,122 @@
+name: honeycow
+
+# Herd-cow stack — a single throwaway drone in the honeycow herd.
+#
+# Deliberately NOT an overlay on docker-compose.yml: a cow has no source
+# checkout, so it can't `build: .`. This file is fully self-contained and
+# pulls a pinned prebuilt image from GHCR (HONEY_IMAGE). `tools/init-cow.sh`
+# renders the .env, drops the config files, and runs:
+#
+#   docker compose -f docker-compose.cow.yml up -d
+#
+# Differences from the flagship prod stack:
+#   - honey-ns PULLS its image (no build); HONEY_IMAGE is required.
+#   - HTTPS is HTTP-01 self-issued by Caddy (caddy/Caddyfile.cow). There is
+#     NO acme/DNS-01 sidecar and NO TSIG key — the whole point of the herd's
+#     cert design is zero secrets on a disposable box.
+#   - No wire-monitoring sidecars (tcpdump/zeek). Those are flagship-grade
+#     ground truth; a $4 cow ships parsed digests, not pcaps.
+
+networks:
+  default:
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: fd00:c0w:c0w::/64
+
+services:
+  honey-ns:
+    # Pinned GHCR image — cows pull, never build. Required (no :-default) so a
+    # misconfigured cow fails loudly instead of silently running stale code.
+    image: ${HONEY_IMAGE:?HONEY_IMAGE must be set to a pinned ghcr.io/<owner>/honeycow tag}
+    container_name: honeycow
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    pids_limit: 128
+    mem_limit: 256m
+    # Caddy owns public :80/:443; honey-ns only publishes :53. A cow is a
+    # dedicated box, so we bind the wildcard rather than per-cow public IPs —
+    # init-cow.sh disables systemd-resolved's :53 stub listener first so the
+    # wildcard bind is free. (v6 lines assume the cow has IPv6; drop them on a
+    # v4-only provider.)
+    ports:
+      - "0.0.0.0:53:53/udp"
+      - "0.0.0.0:53:53/tcp"
+      - "[::]:53:53/udp"
+      - "[::]:53:53/tcp"
+    volumes:
+      - honeycow_logs:/var/log/honeycow
+      # Directory bind (not single-file) so exemption reloads via SIGHUP pick
+      # up edits — same inode gotcha as the flagship. Reload:
+      # `docker kill -s HUP honeycow`.
+      - ./config:/etc/honeycow:ro
+    environment:
+      HONEY_PUBLIC_A: ${HONEY_PUBLIC_A:?HONEY_PUBLIC_A must be set}
+      HONEY_PUBLIC_AAAA: ${HONEY_PUBLIC_AAAA:-}
+      HONEY_SINKHOLE_A: ${HONEY_SINKHOLE_A:-}
+      HONEY_SINKHOLE_AAAA: ${HONEY_SINKHOLE_AAAA:-}
+      HONEY_DOMAIN: ${HONEY_DOMAIN:-example.com.}
+      HONEY_NS_HOSTS: ${HONEY_NS_HOSTS:-ns1.example.com,ns2.example.com}
+      HONEY_ABUSE_EMAIL: ${HONEY_ABUSE_EMAIL:-abuse@example.com}
+      HONEY_ABUSE_URL: ${HONEY_ABUSE_URL:-https://example.com}
+      HONEY_TXT_CALLING_CARD: "${HONEY_TXT_CALLING_CARD:-honeycow: this is not the cow you are looking for. a polite ns squatter. https://example.com abuse@example.com}"
+      HONEY_VERSION_BIND_TXT: "${HONEY_VERSION_BIND_TXT:-}"
+      # The reason this whole stack exists: stamp every event with the cow's
+      # vantage-point id so merged digests stay attributable. Required here.
+      HONEY_SITE_ID: ${HONEY_SITE_ID:?HONEY_SITE_ID must be set to this cow's vantage-point id (e.g. ams-01)}
+      HONEY_LOG: /var/log/honeycow/events.jsonl
+      HONEY_EXEMPTION_FILE: /etc/honeycow/exemptions.txt
+      HONEY_STATIC_INDEX: /app/static/index.html
+      HONEY_BIND_V4: 0.0.0.0
+      HONEY_BIND_V6: "::"
+      HONEY_PORT: 53
+      HONEY_HTTP_PORT: 80
+      HONEY_TCP_TIMEOUT: 5
+      HONEY_TCP_MAX_CONNS: 50
+      HONEY_TCP_ACCEPT_BACKLOG: 100
+      HONEY_TCP_MAX_QUERIES_PER_CONN: 32
+      HONEY_UDP_RATELIMIT_ENABLED: ${HONEY_UDP_RATELIMIT_ENABLED:-1}
+      HONEY_UDP_RATELIMIT_RATE: ${HONEY_UDP_RATELIMIT_RATE:-200}
+      HONEY_UDP_RATELIMIT_BURST: ${HONEY_UDP_RATELIMIT_BURST:-400}
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: honeycow-caddy
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    ports:
+      - "80:80/tcp"
+      - "443:443/tcp"
+    environment:
+      # Caddy substitutes {$HERD_FQDN} / {$ACME_EMAIL} from these at load.
+      HERD_FQDN: ${HERD_FQDN:?HERD_FQDN must be set to this cow's hostname, e.g. ams-01.herd.honeycow.net}
+      ACME_EMAIL: ${HONEY_ABUSE_EMAIL:-abuse@example.com}
+    volumes:
+      # Directory bind (inode gotcha). init-cow.sh writes the cow Caddyfile to
+      # ./caddy/Caddyfile from the canonical caddy/Caddyfile.cow.
+      - ./caddy:/etc/caddy:ro
+      - caddy_data:/data      # persists self-issued certs across restarts
+      - caddy_config:/config
+    depends_on:
+      - honey-ns
+
+volumes:
+  honeycow_logs:
+  caddy_data:
+  caddy_config:

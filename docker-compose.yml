@@ -44,6 +44,10 @@ services:
       HONEY_ABUSE_URL: ${HONEY_ABUSE_URL:-https://example.com}
       HONEY_TXT_CALLING_CARD: "${HONEY_TXT_CALLING_CARD:-honeycow: this is not the cow you are looking for. a polite ns squatter. https://example.com abuse@example.com}"
       HONEY_VERSION_BIND_TXT: "${HONEY_VERSION_BIND_TXT:-}"
+      # Herd vantage-point id, stamped onto every event as site_id. Unset on
+      # the flagship (single cow) -> empty -> field omitted, logs unchanged.
+      # A herd cow sets this so its digests stay attributable once merged.
+      HONEY_SITE_ID: ${HONEY_SITE_ID:-}
       HONEY_LOG: /var/log/honeycow/events.jsonl
       HONEY_EXEMPTION_FILE: /etc/honeycow/exemptions.txt
       HONEY_STATIC_INDEX: /app/static/index.html

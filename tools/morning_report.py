@@ -47,6 +47,7 @@ try:
     from tools.honeycow_digest import (
         FLAG_RD,
         bucket_v4_v6,
+        classify_http,
         classify_query,
         classify_research_scanner,
         ip_in_nets,
@@ -64,6 +65,7 @@ except ImportError:
     from honeycow_digest import (
         FLAG_RD,
         bucket_v4_v6,
+        classify_http,
         classify_query,
         classify_research_scanner,
         ip_in_nets,
@@ -308,6 +310,15 @@ def render(
     for p, n in collections.Counter(e.get("path") for e in http).most_common(10):
         print(f"  {n:4d}  {p}")
 
+    # HTTP-side probe taxonomy — twin of "DNS probe families". Names the exploit
+    # sweeps hiding in the path list (e.g. Hikvision CVE-2021-36260 recon against
+    # /SDK/webLanguage) instead of leaving them as bare paths.
+    section("HTTP probe families")
+    for k, n in collections.Counter(
+        classify_http(e.get("path", "")) for e in http
+    ).most_common():
+        print(f"  {n:4d}  {k}")
+
     section("HTTP top user agents (8)")
     for ua, n in collections.Counter(e.get("user_agent") for e in http).most_common(8):
         print(f"  {n:4d}  {ua!r}")
@@ -494,6 +505,16 @@ def render_herd(
     section("HTTP top paths (10)")
     for p, n in collections.Counter(merged.get("http_paths", {})).most_common(10):
         print(f"  {n:4d}  {p}")
+
+    # HTTP-side probe taxonomy — twin of "DNS probe families". Derived from the
+    # path counts above, so exploit sweeps (e.g. Hikvision CVE-2021-36260 recon
+    # against /SDK/webLanguage) read as a named family instead of a bare path.
+    section("HTTP probe families")
+    http_fam: collections.Counter = collections.Counter()
+    for path, n in merged.get("http_paths", {}).items():
+        http_fam[classify_http(path)] += n
+    for k, n in http_fam.most_common():
+        print(f"  {n:4d}  {k}")
 
     section("HTTP top user agents (8)")
     for ua, n in collections.Counter(

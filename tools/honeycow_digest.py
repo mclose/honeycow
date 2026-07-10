@@ -220,6 +220,64 @@ def classify_research_scanner(qname: str) -> str | None:
     return None
 
 
+# HTTP-side twin of classify_query: maps a request path to a short probe-family
+# label. Two match strategies, checked most-specific first:
+#   * HTTP_PROBE_SIGNATURES — exact match on the bare path (query string /
+#     fragment stripped, case-insensitive). For endpoints whose *path* is the
+#     whole tell.
+#   * HTTP_PROBE_SUBSTRINGS — substring match on the full lowercased target
+#     (query string INCLUDED). For campaigns whose signature rides in the
+#     query string (php-cgi arg injection) or varies the path around a stable
+#     token (phpunit vendor depth, apache traversal depth).
+# Either way the label is derivable from the `http_paths` counts every digest
+# already carries — those keys are the full raw request target (honey_http.py
+# logs method + full request-URI) — so no digest schema bump is needed to start
+# reporting families. Add signatures here as new campaigns show up.
+HTTP_PROBE_SIGNATURES: tuple[tuple[str, str], ...] = (
+    # CVE-2021-36260 — unauthenticated command injection in Hikvision IP
+    # camera / NVR firmware (CVSS 9.8). The RCE itself is a PUT carrying an
+    # XML `<language>$(cmd)</language>` body; the GET /SDK/webLanguage we see
+    # is the recon leg that fingerprints the endpoint before the payload.
+    ("/sdk/weblanguage", "hikvision-webLanguage"),
+    # Exposed VCS metadata — source/secret disclosure.
+    ("/.git/config", "git-config-leak"),
+)
+
+# Substring signatures matched against the full lowercased target (path AND
+# query string). Ordered most-specific first; first hit wins.
+HTTP_PROBE_SUBSTRINGS: tuple[tuple[str, str], ...] = (
+    # CVE-2012-1823 — php-cgi argument injection. The attacker's `-d` flags
+    # ride in the query string (`...auto_prepend_file=php://input`, URL-encoded
+    # on the wire as `%ADd` / `%3d`), so we match the payload token rather than
+    # the (arbitrary, often `/` or `/hello.world`) path.
+    ("auto_prepend_file", "php-cgi-rce"),
+    # CVE-2017-9841 — PHPUnit eval-stdin.php RCE. Scanners spray many vendor
+    # path depths; the trailing script name is the stable tell.
+    ("eval-stdin.php", "phpunit-rce"),
+    # CVE-2021-41773 / -42013 — Apache path traversal to RCE via encoded
+    # dot-segments under cgi-bin (`/cgi-bin/.%2e/.../bin/sh`).
+    ("/cgi-bin/.%2e", "apache-traversal"),
+)
+
+
+def classify_http(path: str) -> str:
+    if not path:
+        return "empty"
+    full = path.lower()
+    bare = full.split("?", 1)[0].split("#", 1)[0]
+    for needle, label in HTTP_PROBE_SIGNATURES:
+        if bare == needle:
+            return label
+    # dotenv harvesting: `/.env` plus the `.env.local` / `.env.production`
+    # / `.env.backup` / … family that scanners spray as a set.
+    if bare == "/.env" or bare.startswith("/.env."):
+        return "env-harvest"
+    for needle, label in HTTP_PROBE_SUBSTRINGS:
+        if needle in full:
+            return label
+    return "other"
+
+
 # ---- UFW log parser --------------------------------------------------------
 
 UFW_RE = re.compile(

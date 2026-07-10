@@ -16,6 +16,7 @@ import tools.morning_report as report
 def test_morning_report_reexports_are_the_same_objects():
     # The report must not carry its own divergent copy of the classifier.
     assert report.classify_query is digest.classify_query
+    assert report.classify_http is digest.classify_http
     assert report.classify_research_scanner is digest.classify_research_scanner
     assert report.FLAG_RD is digest.FLAG_RD
 
@@ -24,6 +25,36 @@ def test_classifier_runs_from_the_lib_directly():
     ev = {"qname": "version.bind.", "qclass_name": "CH", "qtype_name": "TXT"}
     assert digest.classify_query(ev) == "chaos-banner"
     assert digest.classify_research_scanner("x.shadowserver.org.") == "shadowserver"
+
+
+def test_classify_http_probe_families():
+    c = digest.classify_http
+    # Hikvision CVE-2021-36260 recon — case-insensitive, query string ignored.
+    assert c("/SDK/webLanguage") == "hikvision-webLanguage"
+    assert c("/sdk/weblanguage?type=1") == "hikvision-webLanguage"
+    # dotenv harvesting: bare .env plus the sprayed variant family.
+    assert c("/.env") == "env-harvest"
+    assert c("/.env.production") == "env-harvest"
+    assert c("/.env.backup") == "env-harvest"
+    # VCS metadata disclosure.
+    assert c("/.git/config") == "git-config-leak"
+    # php-cgi arg injection (CVE-2012-1823) — payload rides in the query string,
+    # path varies. Both observed on-the-wire variants must classify.
+    assert c("/hello.world?%ADd+auto_prepend_file%3dphp://input") == "php-cgi-rce"
+    assert c("/?%ADd+allow_url_include%3d1+%ADd+auto_prepend_file%3dphp://input") == "php-cgi-rce"
+    # PHPUnit eval-stdin.php RCE (CVE-2017-9841) — matches regardless of vendor depth.
+    assert c("/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php") == "phpunit-rce"
+    assert c("/vendor/phpunit/phpunit/Util/PHP/eval-stdin.php") == "phpunit-rce"
+    # Apache path traversal to RCE (CVE-2021-41773) — encoded dot-segments under
+    # cgi-bin; uppercase %2E normalizes.
+    assert c("/cgi-bin/.%2e/.%2e/.%2e/.%2e/bin/sh") == "apache-traversal"
+    assert c("/cgi-bin/.%2E/.%2E/bin/sh") == "apache-traversal"
+    # Everything else is unclassified; empty path is its own bucket.
+    assert c("/") == "other"
+    assert c("/favicon.ico") == "other"
+    assert c("") == "empty"
+    # A near-miss must NOT match the .env family (no false-positive prefix).
+    assert c("/.environment") == "other"
 
 
 # --- digest emitter (PR-C) --------------------------------------------------

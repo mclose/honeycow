@@ -29,9 +29,12 @@ DEV_LOG       ?= /tmp/honeycow.jsonl
 DEV_PUBLIC_A  ?= 127.0.0.1
 
 # Morning-report inputs (local copies pulled from VPS).
-EVENTS       ?= /tmp/honeycow-analysis/events.jsonl
-UFW          ?= /tmp/honeycow-analysis/ufw.log
+ANALYSIS_DIR ?= /tmp/honeycow-analysis
+EVENTS       ?= $(ANALYSIS_DIR)/events.jsonl
+UFW          ?= $(ANALYSIS_DIR)/ufw.log
 HOURS        ?= 24
+# SQLite analysis index built by `make ingest` (derived, rebuildable).
+DB           ?= $(ANALYSIS_DIR)/honeycow.db
 # Operator-specific list of our own IPs/CIDRs. Gitignored. Bucketed as
 # self-test in the morning report so triage focuses on "not us" traffic.
 OUR_IPS_FILE ?= tools/our-ips.txt
@@ -45,7 +48,7 @@ HOST ?= 127.0.0.1
         up-prod down-prod logs-prod \
         logs-wire report-wire \
         deploy setup-remote _sandbox_check \
-        bump tag gh-release report clean
+        bump tag gh-release pull report ingest clean
 
 help:  ## List targets
 	@awk 'BEGIN{FS=":.*##"; printf "HoneyCow v$(VERSION) — targets:\n"} \
@@ -214,6 +217,14 @@ smoke:  ## Post-deploy sanity check (HOST=<vps-ipv4>)
 		|| (echo "smoke FAIL: no calling-card TXT"; exit 1)
 	@echo "smoke OK"
 
+pull:  ## Fetch fresh events.jsonl + FULL rotated/gz ufw.log from $(VPS_HOST) into $(ANALYSIS_DIR)
+	@mkdir -p $(ANALYSIS_DIR)
+	@ssh $(VPS_HOST) 'docker exec $(PROJECT) cat /var/log/honeycow/events.jsonl' > $(EVENTS)
+	@# zcat -f over `ls -tr` stitches ufw.log.4.gz…ufw.log.1…ufw.log oldest-first,
+	@# so historical reports see the full ~5-week retention, not just today's file.
+	@ssh $(VPS_HOST) 'sudo zcat -f $$(ls -tr /var/log/ufw.log*)' > $(UFW)
+	@echo "pulled $$(wc -l < $(EVENTS)) events, $$(wc -l < $(UFW)) ufw lines into $(ANALYSIS_DIR)"
+
 report:  ## Morning report from /tmp/honeycow-analysis/{events.jsonl,ufw.log}
 	@tools/morning_report.py --events $(EVENTS) --ufw $(UFW) --hours $(HOURS) \
 		$(if $(CERT_ISSUED),--cert-issued $(CERT_ISSUED)) \
@@ -230,6 +241,10 @@ DIGEST_OUT ?= /tmp/honeycow-analysis/digest.jsonl
 digest:  ## Emit hourly digest lines from raw events (use DRY_RUN=1 to preview)
 	@tools/honeycow_digest.py --events $(EVENTS) --ufw $(UFW) \
 		--out $(DIGEST_OUT) $(if $(DRY_RUN),--dry-run)
+
+ingest:  ## Ingest ALL of $(EVENTS)+$(UFW) into SQLite $(DB) (DRY_RUN=1 preview, REBUILD=1 fresh)
+	@tools/ingest.py --db $(DB) --events $(EVENTS) --ufw $(UFW) \
+		$(if $(DRY_RUN),--dry-run) $(if $(REBUILD),--rebuild)
 
 # ---- housekeeping --------------------------------------------------------
 

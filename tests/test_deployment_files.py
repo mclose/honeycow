@@ -134,6 +134,20 @@ def test_refresh_script_exists_and_executable():
     assert "--dry-run" in text      # mutating tool honours dry-run
 
 
+def test_pull_script_is_incremental_and_fail_safe():
+    p = ROOT / "tools" / "pull-logs.sh"
+    assert p.is_file(), "missing tools/pull-logs.sh"
+    assert p.stat().st_mode & 0o111, "pull-logs.sh must be executable"
+    text = p.read_text()
+    # events.jsonl: only the new tail (append-only), not a full re-cat.
+    assert "tail -c +" in text
+    # ufw: rsync --append-verify (the herd's only-changed-bytes mechanism).
+    assert "--append-verify" in text
+    # mutating tool: dry-run + a full-repull escape hatch.
+    assert "--dry-run" in text
+    assert "--full" in text
+
+
 def test_systemd_units_are_host_agnostic():
     svc = (ROOT / "deploy" / "systemd" / "honeycow-index.service").read_text()
     tmr = (ROOT / "deploy" / "systemd" / "honeycow-index.timer").read_text()

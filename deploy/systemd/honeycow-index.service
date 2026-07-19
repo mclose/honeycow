@@ -1,0 +1,25 @@
+# HoneyCow SQLite index refresh — pull raw logs from the honeycow VPS and
+# ingest into the local index. Runs on the REPORT host (claude), not the
+# honeypot. Install as a systemd *user* unit so it needs no root:
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/systemd/honeycow-index.{service,timer} ~/.config/systemd/user/
+#   loginctl enable-linger "$USER"        # so the timer runs while logged out
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now honeycow-index.timer
+#
+# Assumes the repo at ~/projects/honeycow (the standard checkout path). If it
+# lives elsewhere, edit ExecStart / set HONEYCOW_ANALYSIS_DIR here.
+[Unit]
+Description=HoneyCow: pull raw logs + refresh SQLite index
+Documentation=file:%h/projects/honeycow/docs/deployment.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/projects/honeycow/tools/refresh-index.sh
+# Persistent data dir (survives reboot); override here if desired.
+Environment=HONEYCOW_ANALYSIS_DIR=%h/honeycow-analysis
+Nice=10
+TimeoutStartSec=1800

@@ -28,8 +28,10 @@ DEV_HTTP_PORT ?= 18080
 DEV_LOG       ?= /tmp/honeycow.jsonl
 DEV_PUBLIC_A  ?= 127.0.0.1
 
-# Morning-report inputs (local copies pulled from VPS).
-ANALYSIS_DIR ?= /tmp/honeycow-analysis
+# Morning-report inputs (local copies pulled from VPS). Persistent by design
+# (NOT /tmp — the SQLite index accumulates history that outlives UFW rotation
+# on the VPS). The nightly timer and manual runs share this one dir.
+ANALYSIS_DIR ?= $(HOME)/honeycow-analysis
 EVENTS       ?= $(ANALYSIS_DIR)/events.jsonl
 UFW          ?= $(ANALYSIS_DIR)/ufw.log
 HOURS        ?= 24
@@ -48,7 +50,7 @@ HOST ?= 127.0.0.1
         up-prod down-prod logs-prod \
         logs-wire report-wire \
         deploy setup-remote _sandbox_check \
-        bump tag gh-release pull report report-db ingest clean
+        bump tag gh-release pull report report-raw ingest refresh install-timer clean
 
 help:  ## List targets
 	@awk 'BEGIN{FS=":.*##"; printf "HoneyCow v$(VERSION) — targets:\n"} \
@@ -225,13 +227,14 @@ pull:  ## Fetch fresh events.jsonl + FULL rotated/gz ufw.log from $(VPS_HOST) in
 	@ssh $(VPS_HOST) 'sudo zcat -f $$(ls -tr /var/log/ufw.log*)' > $(UFW)
 	@echo "pulled $$(wc -l < $(EVENTS)) events, $$(wc -l < $(UFW)) ufw lines into $(ANALYSIS_DIR)"
 
-report:  ## Morning report from /tmp/honeycow-analysis/{events.jsonl,ufw.log}
-	@tools/morning_report.py --events $(EVENTS) --ufw $(UFW) --hours $(HOURS) \
+report:  ## Morning report from the SQLite index $(DB) (fast; run `make ingest` first)
+	@test -f "$(DB)" || { echo "no index at $(DB) — run: make pull && make ingest"; exit 1; }
+	@tools/morning_report.py --db $(DB) --hours $(HOURS) \
 		$(if $(CERT_ISSUED),--cert-issued $(CERT_ISSUED)) \
 		$(if $(wildcard $(OUR_IPS_FILE)),--our-ips-file $(OUR_IPS_FILE))
 
-report-db:  ## Morning report from the SQLite index $(DB) (run `make ingest` first)
-	@tools/morning_report.py --db $(DB) --hours $(HOURS) \
+report-raw:  ## Morning report straight from raw $(EVENTS)+$(UFW) (no index needed)
+	@tools/morning_report.py --events $(EVENTS) --ufw $(UFW) --hours $(HOURS) \
 		$(if $(CERT_ISSUED),--cert-issued $(CERT_ISSUED)) \
 		$(if $(wildcard $(OUR_IPS_FILE)),--our-ips-file $(OUR_IPS_FILE))
 
@@ -250,6 +253,18 @@ digest:  ## Emit hourly digest lines from raw events (use DRY_RUN=1 to preview)
 ingest:  ## Ingest ALL of $(EVENTS)+$(UFW) into SQLite $(DB) (DRY_RUN=1 preview, REBUILD=1 fresh)
 	@tools/ingest.py --db $(DB) --events $(EVENTS) --ufw $(UFW) \
 		$(if $(DRY_RUN),--dry-run) $(if $(REBUILD),--rebuild)
+
+refresh:  ## pull + ingest in one step (what the nightly timer runs; DRY_RUN=1 to preview)
+	@tools/refresh-index.sh $(if $(DRY_RUN),--dry-run)
+
+install-timer:  ## Install + enable the nightly refresh systemd *user* timer on this host
+	@mkdir -p $(HOME)/.config/systemd/user
+	@cp deploy/systemd/honeycow-index.service deploy/systemd/honeycow-index.timer \
+		$(HOME)/.config/systemd/user/
+	@loginctl enable-linger "$$USER" 2>/dev/null || true
+	@systemctl --user daemon-reload
+	@systemctl --user enable --now honeycow-index.timer
+	@systemctl --user list-timers honeycow-index.timer --no-pager
 
 # ---- housekeeping --------------------------------------------------------
 

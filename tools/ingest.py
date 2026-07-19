@@ -287,6 +287,11 @@ def ingest_events(
     rowhashes already present so the preview is honest.
     """
     dns_seen = http_seen = dns_new = http_new = 0
+    if not path.exists():
+        # Mirror parse_ufw's fail-soft: a missing file (e.g. before the first
+        # pull) warns and contributes nothing rather than crashing the run.
+        print(f"[events] not found: {path}", file=sys.stderr)
+        return {"dns_seen": 0, "dns_new": 0, "http_seen": 0, "http_new": 0}
     existing = _existing_rowhashes(conn, ("dns", "http")) if dry_run else None
     dns_rows: list[tuple] = []
     http_rows: list[tuple] = []

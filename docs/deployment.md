@@ -139,3 +139,49 @@ curl -sI http://$HOST/                        # HTTP closer headers
 - `HONEY_BIND_V6=` disables IPv6 binding if the VPS lacks it.
 - Rebuild the Docker image after changing `static/index.html` (it is
   baked into the image at build time).
+
+## Analysis Pipeline
+
+The honeypot's raw logs live on the honeycow VPS; analysis runs on the
+report host (claude), which pulls them down. The flow is three steps:
+
+```bash
+make pull      # ssh honeycow: copy FULL events.jsonl + all rotated ufw.log* here
+make ingest    # (re)build the local SQLite index from the raw files
+make report    # fast report from the index (indexed time-window query)
+```
+
+`make refresh` runs `pull` + `ingest` in one step (with a lockfile), and is
+what the nightly timer invokes.
+
+Key properties:
+
+- **Pull is full-fidelity, not a summary.** `events.jsonl` is the entire
+  raw log; `ufw.log` is every rotation stitched together (`zcat -f` over
+  `ls -tr`). The SQLite DB is one row per event with ~every scalar field
+  indexed — a reshape of the raw, not a reduction. (The lossy per-hour
+  *digest* is a separate herd artifact; see `docs/herd.md`.)
+- **The index is a derived, rebuildable view.** The raw JSONL/UFW stay the
+  capture-of-record. If the DB is ever wrong: `make ingest REBUILD=1`.
+- **Ingest is idempotent** (per-row `rowhash`), so the DB accumulates and
+  its UFW history outlives the VPS's ~5-week rotation. The data dir is
+  persistent (`~/honeycow-analysis`), never `/tmp`.
+- `make report-raw` reads the raw files directly if you don't want to
+  ingest first; `make report` reads the index and errors with a hint if it
+  is missing.
+
+### Nightly refresh (systemd user timer)
+
+```bash
+make install-timer   # copies units, enables linger, enables --now
+# or manually:
+cp deploy/systemd/honeycow-index.{service,timer} ~/.config/systemd/user/
+loginctl enable-linger "$USER"
+systemctl --user daemon-reload
+systemctl --user enable --now honeycow-index.timer
+systemctl --user list-timers honeycow-index.timer   # confirm next run
+journalctl --user -u honeycow-index.service -n 50    # inspect a run
+```
+
+The timer fires daily (05:30 + jitter), `Persistent=true` so a missed run
+(host off) catches up on next boot. It runs as a *user* unit — no root.

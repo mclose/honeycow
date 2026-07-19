@@ -118,3 +118,28 @@ def test_base_compose_passes_site_id():
     # Flagship passthrough so HONEY_SITE_ID actually reaches the container.
     text = (ROOT / "docker-compose.yml").read_text()
     assert "HONEY_SITE_ID: ${HONEY_SITE_ID:-}" in text
+
+
+# --- nightly analysis pipeline ---------------------------------------------
+
+
+def test_refresh_script_exists_and_executable():
+    p = ROOT / "tools" / "refresh-index.sh"
+    assert p.is_file(), "missing tools/refresh-index.sh"
+    assert p.stat().st_mode & 0o111, "refresh-index.sh must be executable"
+    text = p.read_text()
+    # Persistent data dir by design (see docstring) — never /tmp.
+    assert "HONEYCOW_ANALYSIS_DIR" in text
+    assert "flock" in text          # no overlapping runs
+    assert "--dry-run" in text      # mutating tool honours dry-run
+
+
+def test_systemd_units_are_host_agnostic():
+    svc = (ROOT / "deploy" / "systemd" / "honeycow-index.service").read_text()
+    tmr = (ROOT / "deploy" / "systemd" / "honeycow-index.timer").read_text()
+    # User unit: paths via %h, no hardcoded /home/<someone> or host IPs.
+    assert "%h/projects/honeycow/tools/refresh-index.sh" in svc
+    assert "/home/" not in svc, "service leaks an absolute home path"
+    assert "142.93" not in svc and "142.93" not in tmr, "unit leaks a host IP"
+    assert "OnCalendar=" in tmr
+    assert "Persistent=true" in tmr

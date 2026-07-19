@@ -48,7 +48,7 @@ HOST ?= 127.0.0.1
         up-prod down-prod logs-prod \
         logs-wire report-wire \
         deploy setup-remote _sandbox_check \
-        bump tag gh-release pull report ingest clean
+        bump tag gh-release pull report report-db ingest clean
 
 help:  ## List targets
 	@awk 'BEGIN{FS=":.*##"; printf "HoneyCow v$(VERSION) — targets:\n"} \
@@ -227,6 +227,11 @@ pull:  ## Fetch fresh events.jsonl + FULL rotated/gz ufw.log from $(VPS_HOST) in
 
 report:  ## Morning report from /tmp/honeycow-analysis/{events.jsonl,ufw.log}
 	@tools/morning_report.py --events $(EVENTS) --ufw $(UFW) --hours $(HOURS) \
+		$(if $(CERT_ISSUED),--cert-issued $(CERT_ISSUED)) \
+		$(if $(wildcard $(OUR_IPS_FILE)),--our-ips-file $(OUR_IPS_FILE))
+
+report-db:  ## Morning report from the SQLite index $(DB) (run `make ingest` first)
+	@tools/morning_report.py --db $(DB) --hours $(HOURS) \
 		$(if $(CERT_ISSUED),--cert-issued $(CERT_ISSUED)) \
 		$(if $(wildcard $(OUR_IPS_FILE)),--our-ips-file $(OUR_IPS_FILE))
 

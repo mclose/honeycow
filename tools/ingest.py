@@ -47,46 +47,72 @@ try:
 except ImportError:
     from honeycow_digest import classify_http, classify_query, parse_ufw
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
+-- Wide by design: the JSONL is the capture-of-record, but we index every
+-- scalar DNS field so ad-hoc SQL never has to fall back to grepping the raw.
+-- Only edns_options_raw (per-option hex bytes) is left to the JSONL.
 CREATE TABLE IF NOT EXISTS dns (
-    rowhash       TEXT PRIMARY KEY,
-    ts            TEXT,
-    ts_epoch      REAL,
-    src_ip        TEXT,
-    src_port      INTEGER,
-    transport     TEXT,
-    event         TEXT,      -- query | query_drop
-    qname         TEXT,
-    qtype         TEXT,
-    qclass        TEXT,
-    opcode        TEXT,
-    rcode         TEXT,
-    response_kind TEXT,
-    handler       TEXT,
-    drop_reason   TEXT,
-    response_bytes INTEGER,
-    truncated     INTEGER,
-    family        TEXT
+    rowhash          TEXT PRIMARY KEY,
+    ts               TEXT,
+    ts_epoch         REAL,
+    request_id       TEXT,
+    transport        TEXT,
+    src_ip           TEXT,
+    src_port         INTEGER,
+    dst_bind         TEXT,
+    raw_len          INTEGER,   -- inbound request size (amplification-in / probe size)
+    event            TEXT,      -- query | query_drop
+    decision         TEXT,
+    handler          TEXT,
+    drop_reason      TEXT,
+    rate_limited     INTEGER,
+    elapsed_ms       REAL,
+    dns_id           INTEGER,   -- DNS transaction id (query.id), not request_id
+    opcode           TEXT,
+    rcode            TEXT,
+    flags            INTEGER,   -- header flags bitfield (RD/AA/… for exemplars)
+    qdcount          INTEGER,
+    qname            TEXT,
+    qtype            TEXT,
+    qtype_int        INTEGER,
+    qclass           TEXT,
+    qclass_int       INTEGER,
+    response_kind    TEXT,
+    answer_count     INTEGER,
+    authority_count  INTEGER,
+    additional_count INTEGER,
+    response_bytes   INTEGER,
+    truncated        INTEGER,
+    edns_version     INTEGER,   -- NULL when the query carried no EDNS OPT
+    edns_payload     INTEGER,   -- advertised UDP buffer (scanner fingerprint)
+    do_set           INTEGER,   -- DNSSEC-OK bit
+    edns_options     TEXT,      -- JSON list of EDNS option otypes present
+    family           TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_dns_ts     ON dns(ts_epoch);
 CREATE INDEX IF NOT EXISTS ix_dns_src    ON dns(src_ip);
 CREATE INDEX IF NOT EXISTS ix_dns_qname  ON dns(qname);
 CREATE INDEX IF NOT EXISTS ix_dns_family ON dns(family);
+CREATE INDEX IF NOT EXISTS ix_dns_qtype  ON dns(qtype);
 
 CREATE TABLE IF NOT EXISTS http (
     rowhash        TEXT PRIMARY KEY,
     ts             TEXT,
     ts_epoch       REAL,
     src_ip         TEXT,
+    src_port       INTEGER,
+    dst_bind       TEXT,
     client_ip      TEXT,
+    forwarded_for  TEXT,
     method         TEXT,
     path           TEXT,
     host           TEXT,
     user_agent     TEXT,
     request_bytes  INTEGER,
     response_bytes INTEGER,
+    elapsed_ms     REAL,
     family         TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_http_ts     ON http(ts_epoch);
@@ -134,6 +160,22 @@ def _int(v: object) -> int | None:
         return None
 
 
+def _real(v: object) -> float | None:
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _json(v: object) -> str | None:
+    """Serialize a small list/dict field (e.g. edns_options) for storage."""
+    if v is None:
+        return None
+    return json.dumps(v, ensure_ascii=False, sort_keys=True)
+
+
 def connect(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -154,20 +196,38 @@ def _dns_row(e: dict, raw: str) -> tuple:
         hashlib.sha1(raw.encode("utf-8", "replace")).hexdigest(),
         e.get("ts"),
         _epoch(e.get("ts")),
+        e.get("request_id"),
+        e.get("transport"),
         e.get("src_ip"),
         _int(e.get("src_port")),
-        e.get("transport"),
+        e.get("dst_bind"),
+        _int(e.get("raw_len")),
         e.get("event"),
-        e.get("qname"),
-        e.get("qtype_name"),
-        e.get("qclass_name"),
-        e.get("opcode"),
-        e.get("rcode"),
-        e.get("response_kind"),
+        e.get("decision"),
         e.get("handler"),
         e.get("drop_reason"),
+        _int(e.get("rate_limited")),
+        _real(e.get("elapsed_ms")),
+        _int(e.get("id")),
+        e.get("opcode"),
+        e.get("rcode"),
+        _int(e.get("flags")),
+        _int(e.get("qdcount")),
+        e.get("qname"),
+        e.get("qtype_name"),
+        _int(e.get("qtype_int")),
+        e.get("qclass_name"),
+        _int(e.get("qclass_int")),
+        e.get("response_kind"),
+        _int(e.get("answer_count")),
+        _int(e.get("authority_count")),
+        _int(e.get("additional_count")),
         _int(e.get("response_bytes")),
         _int(e.get("truncated")),
+        _int(e.get("edns_version")),
+        _int(e.get("edns_payload")),
+        _int(e.get("do_set")),
+        _json(e.get("edns_options")),
         classify_query(e),
     )
 
@@ -178,25 +238,33 @@ def _http_row(e: dict, raw: str) -> tuple:
         e.get("ts"),
         _epoch(e.get("ts")),
         e.get("src_ip"),
+        _int(e.get("src_port")),
+        e.get("dst_bind"),
         e.get("client_ip"),
+        e.get("forwarded_for"),
         e.get("method"),
         e.get("path"),
         e.get("host"),
         e.get("user_agent"),
         _int(e.get("request_bytes")),
         _int(e.get("response_bytes")),
+        _real(e.get("elapsed_ms")),
         classify_http(e.get("path") or ""),
     )
 
 
 _DNS_COLS = (
-    "rowhash, ts, ts_epoch, src_ip, src_port, transport, event, qname, qtype, "
-    "qclass, opcode, rcode, response_kind, handler, drop_reason, "
-    "response_bytes, truncated, family"
+    "rowhash, ts, ts_epoch, request_id, transport, src_ip, src_port, dst_bind, "
+    "raw_len, event, decision, handler, drop_reason, rate_limited, elapsed_ms, "
+    "dns_id, opcode, rcode, flags, qdcount, qname, qtype, qtype_int, qclass, "
+    "qclass_int, response_kind, answer_count, authority_count, additional_count, "
+    "response_bytes, truncated, edns_version, edns_payload, do_set, edns_options, "
+    "family"
 )
 _HTTP_COLS = (
-    "rowhash, ts, ts_epoch, src_ip, client_ip, method, path, host, "
-    "user_agent, request_bytes, response_bytes, family"
+    "rowhash, ts, ts_epoch, src_ip, src_port, dst_bind, client_ip, "
+    "forwarded_for, method, path, host, user_agent, request_bytes, "
+    "response_bytes, elapsed_ms, family"
 )
 _UFW_COLS = "rowhash, ts, ts_epoch, src, dst, proto, dpt, verdict"
 

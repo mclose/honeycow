@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import collections
 import ipaddress
+import sqlite3
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -543,10 +544,78 @@ def render_herd(
 
 # ---- main ------------------------------------------------------------------
 
+def load_from_db(
+    db_path: Path, since: datetime,
+) -> tuple[list[dict], list[dict]]:
+    """Load events + UFW rows from the SQLite index (tools/ingest.py) in the
+    same dict shapes ``load_events`` / ``parse_ufw`` produce, so ``render`` is
+    agnostic to whether the data came from raw files or the index.
+
+    Rows are ordered by (ts_epoch, rowid) to reproduce raw-file (chronological,
+    then insertion) order, which keeps Counter.most_common tie-breaks — and thus
+    the rendered output — identical to the direct-from-raw report.
+    """
+    since_epoch = since.timestamp()
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    events: list[dict] = []
+    try:
+        for r in conn.execute(
+            "SELECT * FROM dns WHERE ts_epoch >= ? ORDER BY ts_epoch, rowid",
+            (since_epoch,),
+        ):
+            e = {
+                "event": r["event"], "src_ip": r["src_ip"],
+                "src_port": r["src_port"], "transport": r["transport"],
+                "qname": r["qname"], "qtype_name": r["qtype"],
+                "qclass_name": r["qclass"], "opcode": r["opcode"],
+                "rcode": r["rcode"], "response_kind": r["response_kind"],
+                "handler": r["handler"], "drop_reason": r["drop_reason"],
+                "flags": r["flags"], "ts": r["ts"],
+            }
+            if r["ts"]:
+                e["_ts"] = datetime.fromisoformat(r["ts"])
+            events.append(e)
+        for r in conn.execute(
+            "SELECT * FROM http WHERE ts_epoch >= ? ORDER BY ts_epoch, rowid",
+            (since_epoch,),
+        ):
+            e = {
+                "event": "http_closer", "src_ip": r["src_ip"],
+                "client_ip": r["client_ip"], "method": r["method"],
+                "path": r["path"], "host": r["host"],
+                "user_agent": r["user_agent"], "ts": r["ts"],
+            }
+            if r["ts"]:
+                e["_ts"] = datetime.fromisoformat(r["ts"])
+            events.append(e)
+        ufw: list[dict] = []
+        for r in conn.execute(
+            "SELECT * FROM ufw WHERE ts_epoch >= ? ORDER BY ts_epoch, rowid",
+            (since_epoch,),
+        ):
+            ts = r["ts"]
+            ufw.append({
+                "src": r["src"], "dst": r["dst"], "proto": r["proto"],
+                # parse_ufw yields dpt as a string; mirror that so port
+                # Counters/sorts match the raw path exactly.
+                "dpt": str(r["dpt"]) if r["dpt"] is not None else None,
+                "verdict": r["verdict"],
+                "ts": datetime.fromisoformat(ts) if ts else None,
+            })
+    finally:
+        conn.close()
+    return events, ufw
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--events", type=Path, default=None,
                     help="path to events.jsonl (or a copy of it)")
+    ap.add_argument("--db", type=Path, default=None,
+                    help="read from a SQLite index built by tools/ingest.py "
+                         "instead of raw events (indexed time-window; UFW comes "
+                         "from the index too, so --ufw is ignored)")
     ap.add_argument("--herd", type=Path, nargs="+", default=None,
                     metavar="PATH",
                     help="merge per-site digest.jsonl files/dirs instead of "
@@ -570,8 +639,10 @@ def main() -> int:
                          "be split between scanner probes and reflection-victim shape")
     args = ap.parse_args()
 
-    if (args.events is None) == (args.herd is None):
-        ap.error("specify exactly one of --events (raw) or --herd (digests)")
+    modes = [args.events is not None, args.db is not None, args.herd is not None]
+    if sum(modes) != 1:
+        ap.error("specify exactly one of --events (raw), --db (SQLite index), "
+                 "or --herd (digests)")
 
     our_nets = load_our_ips(args.our_ips_file, args.our_ip)
     research_nets = load_research_cidrs(
@@ -597,8 +668,11 @@ def main() -> int:
         if cert_issued.tzinfo is None:
             cert_issued = cert_issued.replace(tzinfo=UTC)
 
-    events = load_events(args.events, since)
-    ufw = parse_ufw(args.ufw, since) if args.ufw else []
+    if args.db is not None:
+        events, ufw = load_from_db(args.db, since)
+    else:
+        events = load_events(args.events, since)
+        ufw = parse_ufw(args.ufw, since) if args.ufw else []
 
     print(f"# HoneyCow morning report — window: last {args.hours:g}h "
           f"(since {since.isoformat()})")

@@ -175,3 +175,14 @@ def test_main_rebuild_and_stats(tmp_path, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "dns" in out and "http" in out and "ufw" in out
+
+
+def test_missing_events_file_is_fail_soft(tmp_path, capsys):
+    # Before the first pull the input files don't exist; ingest must warn and
+    # contribute nothing rather than crash the nightly refresh.
+    db = tmp_path / "h.db"
+    conn = ingest.connect(db)
+    ingest.init_schema(conn)
+    res = ingest.ingest_events(conn, tmp_path / "nope.jsonl")
+    assert res == {"dns_seen": 0, "dns_new": 0, "http_seen": 0, "http_new": 0}
+    assert "not found" in capsys.readouterr().err

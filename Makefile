@@ -219,13 +219,9 @@ smoke:  ## Post-deploy sanity check (HOST=<vps-ipv4>)
 		|| (echo "smoke FAIL: no calling-card TXT"; exit 1)
 	@echo "smoke OK"
 
-pull:  ## Fetch fresh events.jsonl + FULL rotated/gz ufw.log from $(VPS_HOST) into $(ANALYSIS_DIR)
-	@mkdir -p $(ANALYSIS_DIR)
-	@ssh $(VPS_HOST) 'docker exec $(PROJECT) cat /var/log/honeycow/events.jsonl' > $(EVENTS)
-	@# zcat -f over `ls -tr` stitches ufw.log.4.gz…ufw.log.1…ufw.log oldest-first,
-	@# so historical reports see the full ~5-week retention, not just today's file.
-	@ssh $(VPS_HOST) 'sudo zcat -f $$(ls -tr /var/log/ufw.log*)' > $(UFW)
-	@echo "pulled $$(wc -l < $(EVENTS)) events, $$(wc -l < $(UFW)) ufw lines into $(ANALYSIS_DIR)"
+pull:  ## Incrementally fetch new events (tail) + changed ufw.log* from $(VPS_HOST) (DRY_RUN=1; FULL=1 to re-pull all)
+	@VPS_HOST=$(VPS_HOST) ANALYSIS_DIR=$(ANALYSIS_DIR) HONEY_CONTAINER=$(PROJECT) \
+		tools/pull-logs.sh $(if $(DRY_RUN),--dry-run) $(if $(FULL),--full)
 
 report:  ## Morning report from the SQLite index $(DB) (fast; run `make ingest` first)
 	@test -f "$(DB)" || { echo "no index at $(DB) — run: make pull && make ingest"; exit 1; }

@@ -8,6 +8,10 @@ venv/
 .env
 *.log
 *.jsonl
+# SQLite analysis index (tools/ingest.py) — derived, rebuildable, never committed.
+*.db
+*.sqlite
+*.sqlite3
 .DS_Store
 
 # acme.sh TSIG key for DNS-01 challenge — secret, do not commit.

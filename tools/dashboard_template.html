@@ -1,0 +1,538 @@
+<title>HoneyCow — daily watch</title>
+<style>
+/* ---- Warm-brown ground is the identity, cream ink on top (measured 15.1:1).
+   Dark is canonical — this is a console tool. Light is a designed second
+   theme, not an inversion.
+   Colour roles are kept strictly apart:
+     --brand (terracotta) is CHROME ONLY. It failed CVD against the warn gold
+       (ΔE 3.8 deutan / 10.1 normal), so it must never be a data mark.
+     --accent (purple) is the interactive/data mark — validated separable.
+     --ok/--warn/--bad are reserved status, never reused as a series.        ---- */
+:root{
+  --bg:#1F1E1D; --surface:#262624; --surface-2:#30302E; --border:#3E3D39;
+  --ink:#F5F4EF; --ink-2:#C9C5BA; --ink-3:#9A9589;
+  --brand:#D97757; --accent:#8E76C8;
+  --ok:#279078; --warn:#B58B22; --bad:#C24940;
+  --ok-wash:#27907826; --warn-wash:#B58B2226; --bad-wash:#C2494026;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  --sans:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  --r:6px;
+}
+@media (prefers-color-scheme:light){
+  :root{
+    --bg:#F5F4EF; --surface:#FFFFFF; --surface-2:#FAF9F5; --border:#E3DFD4;
+    --ink:#1F1E1D; --ink-2:#4A473F; --ink-3:#6E6A5F;
+    --brand:#B85C3C; --accent:#6B52A8;
+    --ok:#1B8A70; --warn:#8A6612; --bad:#B03A31;
+    --ok-wash:#1B8A7014; --warn-wash:#8A661214; --bad-wash:#B03A3114;
+  }
+}
+:root[data-theme="light"]{
+  --bg:#F5F4EF; --surface:#FFFFFF; --surface-2:#FAF9F5; --border:#E3DFD4;
+  --ink:#1F1E1D; --ink-2:#4A473F; --ink-3:#6E6A5F;
+  --brand:#B85C3C; --accent:#6B52A8;
+  --ok:#1B8A70; --warn:#8A6612; --bad:#B03A31;
+  --ok-wash:#1B8A7014; --warn-wash:#8A661214; --bad-wash:#B03A3114;
+}
+:root[data-theme="dark"]{
+  --bg:#1F1E1D; --surface:#262624; --surface-2:#30302E; --border:#3E3D39;
+  --ink:#F5F4EF; --ink-2:#C9C5BA; --ink-3:#9A9589;
+  --brand:#D97757; --accent:#8E76C8;
+  --ok:#279078; --warn:#B58B22; --bad:#C24940;
+  --ok-wash:#27907826; --warn-wash:#B58B2226; --bad-wash:#C2494026;
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font-family:var(--sans); font-size:16px; line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1080px; margin:0 auto; padding:32px 20px 64px; display:flex; flex-direction:column; gap:28px}
+h1,h2,h3{margin:0; text-wrap:balance; font-weight:600}
+h1{font-size:1.5rem; letter-spacing:-0.01em}
+h1 .mark{color:var(--brand)}
+h2{padding-left:10px; border-left:3px solid var(--brand); line-height:1.1}
+h2{font-size:0.95rem}
+.eyebrow{
+  font-family:var(--mono); font-size:0.75rem; text-transform:uppercase;
+  letter-spacing:0.11em; color:var(--ink-3);
+}
+.num{font-family:var(--mono); font-variant-numeric:tabular-nums}
+a{color:var(--brand)}
+
+/* ---- header ---- */
+header{display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap}
+header .sub{color:var(--ink-2); font-size:0.88rem; margin-top:4px}
+#themeBtn{
+  font-family:var(--mono); font-size:0.78rem; letter-spacing:0.08em; text-transform:uppercase;
+  background:var(--surface); color:var(--ink-2); border:1px solid var(--border);
+  border-radius:var(--r); padding:7px 11px; cursor:pointer;
+}
+#themeBtn:hover{color:var(--ink); border-color:var(--brand)}
+
+/* ---- panels ---- */
+.panel{background:var(--surface); border:1px solid var(--border); border-radius:var(--r); padding:18px}
+.panel-h{display:flex; justify-content:space-between; align-items:baseline; gap:12px; margin-bottom:14px}
+
+/* ---- status chip: colour + glyph + word, never colour alone ---- */
+.chip{
+  display:inline-flex; align-items:center; gap:7px; font-family:var(--mono);
+  font-size:0.78rem; text-transform:uppercase; letter-spacing:0.07em;
+  padding:5px 11px; border-radius:99px; border:1px solid;
+}
+.chip .g{display:inline-flex; align-items:center}
+/* Status glyphs are drawn, not typed: a text ⯃ collapses to a blob at cell
+   size. Circle / diamond / octagon read as calm / caution / stop, and the
+   octagon is sized a touch larger with a flat top so its vertices survive. */
+.glyph{fill:currentColor; display:block}
+.cell .glyph{width:15px; height:15px}
+/* Finger-sized hit targets and larger marks on touch screens: the desktop
+   26px cell was well under the ~44px touch-target guidance. */
+@media (pointer:coarse){
+  .cell{width:44px; height:44px; border-radius:7px}
+  .cell .glyph{width:20px; height:20px}
+  .cal{gap:6px}
+  .trend{font-size:0.82rem}
+}
+.s-green{color:var(--ok); border-color:var(--ok); background:var(--ok-wash)}
+.s-yellow{color:var(--warn); border-color:var(--warn); background:var(--warn-wash)}
+.s-red{color:var(--bad); border-color:var(--bad); background:var(--bad-wash)}
+
+/* ---- hero ---- */
+.hero{display:grid; grid-template-columns:minmax(200px,1fr) 2fr; gap:20px}
+@media (max-width:720px){.hero{grid-template-columns:1fr}}
+.hero-l{display:flex; flex-direction:column; gap:10px; justify-content:center}
+.hero-date{font-family:var(--mono); font-size:1.35rem; letter-spacing:-0.01em}
+.tiles{display:grid; grid-template-columns:repeat(auto-fit,minmax(112px,1fr)); gap:10px}
+.tile{background:var(--surface-2); border:1px solid var(--border); border-radius:var(--r); padding:11px 13px}
+.tile .v{font-family:var(--mono); font-variant-numeric:tabular-nums; font-size:1.45rem; letter-spacing:-0.02em}
+.tile .row{display:flex; align-items:center; justify-content:space-between; gap:8px}
+/* Day-over-day trend. Deliberately NEUTRAL ink, never the status hues: those
+   are reserved for the day's grade, and on a honeypot "up" is not bad and
+   "down" is not good — more scanning is just more. Direction + magnitude
+   carry the meaning; colour stays out of it. */
+.trend{
+  display:inline-flex; flex-direction:column; align-items:center; gap:2px;
+  font-family:var(--mono); font-size:0.75rem; color:var(--ink-3); line-height:1;
+}
+.trend svg{display:block; fill:var(--ink-2)}
+.trend.flat{color:var(--ink-3)}
+.tile .k{font-family:var(--mono); font-size:0.72rem; text-transform:uppercase; letter-spacing:0.1em; color:var(--ink-3); margin-top:2px}
+.tile .d{font-size:0.76rem; color:var(--ink-3); font-family:var(--mono)}
+
+/* ---- calendar ---- */
+.cal{display:flex; flex-wrap:wrap; gap:4px}
+.cell{
+  width:30px; height:30px; border-radius:5px; border:1px solid var(--border);
+  background:var(--surface-2); cursor:pointer; padding:0; position:relative;
+  display:flex; align-items:center; justify-content:center;
+  font-family:var(--mono); font-size:9px; color:var(--ink-3); line-height:1;
+}
+.cell:hover{transform:translateY(-1px)}
+.cell:focus-visible{outline:2px solid var(--brand); outline-offset:2px}
+.cell[data-s="green"]{background:var(--ok-wash); border-color:var(--ok); color:var(--ok)}
+.cell[data-s="yellow"]{background:var(--warn-wash); border-color:var(--warn); color:var(--warn)}
+.cell[data-s="red"]{background:var(--bad-wash); border-color:var(--bad); color:var(--bad)}
+.cell[aria-pressed="true"]{box-shadow:0 0 0 2px var(--brand); border-color:var(--brand)}
+.cell.partial{border-style:dashed; opacity:.75}
+.month{display:flex; flex-direction:column; gap:6px}
+.month .lbl{font-family:var(--mono); font-size:0.72rem; letter-spacing:0.1em; text-transform:uppercase; color:var(--ink-3)}
+.cal-row{display:flex; gap:18px; flex-wrap:wrap}
+.legend{display:flex; gap:16px; flex-wrap:wrap; font-size:0.82rem; color:var(--ink-2); font-family:var(--mono)}
+.legend span.k{display:inline-flex; align-items:center; gap:5px}
+
+/* ---- detail ---- */
+.why{list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:7px}
+.why li{
+  font-size:0.92rem; color:var(--ink-2); padding-left:14px; position:relative;
+  border-left:2px solid var(--border); padding-block:2px;
+}
+.why li.hit{border-left-color:currentColor}
+.narrative{
+  background:var(--surface-2); border-left:3px solid var(--brand); border-radius:0 var(--r) var(--r) 0;
+  padding:14px 16px; font-size:0.96rem; color:var(--ink-2); white-space:pre-wrap;
+}
+.grid2{display:grid; grid-template-columns:1fr 1fr; gap:18px}
+@media (max-width:720px){.grid2{grid-template-columns:1fr}}
+table{border-collapse:collapse; width:100%; font-size:0.88rem}
+.scroll{overflow-x:auto}
+th{
+  text-align:left; font-family:var(--mono); font-size:0.72rem; text-transform:uppercase;
+  letter-spacing:0.08em; color:var(--ink-3); font-weight:500;
+  padding:7px 10px 7px 0; border-bottom:1px solid var(--border);
+}
+td{padding:7px 10px 7px 0; border-bottom:1px solid var(--border); color:var(--ink-2)}
+td.n{font-family:var(--mono); font-variant-numeric:tabular-nums; text-align:right; color:var(--ink)}
+td.ip{font-family:var(--mono); color:var(--ink)}
+tr:last-child td{border-bottom:none}
+
+/* ---- charts ---- */
+.chart{position:relative}
+svg{display:block; width:100%; overflow:visible}
+.tip{
+  position:absolute; pointer-events:none; opacity:0; transition:opacity .08s;
+  background:var(--surface-2); border:1px solid var(--border); border-radius:var(--r);
+  padding:8px 11px; font-family:var(--mono); font-size:0.8rem; color:var(--ink);
+  white-space:nowrap; z-index:5;
+}
+footer{color:var(--ink-3); font-size:0.84rem; font-family:var(--mono); line-height:1.7}
+@media (prefers-reduced-motion:reduce){*{transition:none!important; transform:none!important}}
+</style>
+
+<div class="wrap">
+  <header>
+    <div>
+      <h1><span class="mark">HoneyCow</span> — daily watch</h1>
+      <div class="sub" id="range"></div>
+    </div>
+    <button id="themeBtn" type="button">theme</button>
+  </header>
+
+  <!-- hero: the most recent day, because that's the question you arrive with -->
+  <section class="panel hero" id="hero"></section>
+
+  <!-- the compounding history -->
+  <section class="panel">
+    <div class="panel-h">
+      <h2>Daily history</h2>
+      <div class="legend" id="legend"></div>
+    </div>
+    <div class="cal-row" id="cal"></div>
+  </section>
+
+  <!-- selected day -->
+  <section class="panel" id="detail"></section>
+
+  <!-- trends: two charts, never a dual axis -->
+  <section class="grid2">
+    <div class="panel">
+      <div class="panel-h"><h2>DNS queries / day</h2><span class="eyebrow" id="dnsMeta"></span></div>
+      <div class="chart" id="dnsChart"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-h"><h2>HTTP closer hits / day</h2><span class="eyebrow" id="httpMeta"></span></div>
+      <div class="chart" id="httpChart"></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-h"><h2>How days are graded</h2><span class="eyebrow">the rubric</span></div>
+    <div id="rubric" style="font-size:.83rem;color:var(--ink-2)"></div>
+  </section>
+
+  <footer id="foot"></footer>
+</div>
+
+<script>
+const DATA = /*__DATA__*/null;
+const WORD  = {green:"routine", yellow:"worth a look", red:"something real"};
+
+/* Regular n-gon, so every glyph is a real polygon rather than a font's idea
+   of one. `rot` sets orientation: a diamond wants a vertex at the top, a stop
+   sign wants a flat edge there. */
+function polyPoints(n, r, cx, cy, rot){
+  return Array.from({length:n}, (_,i) => {
+    const a = rot + i * 2 * Math.PI / n;
+    return `${(cx + r*Math.cos(a)).toFixed(2)},${(cy + r*Math.sin(a)).toFixed(2)}`;
+  }).join(" ");
+}
+function statusGlyph(s, px){
+  const inner =
+    s === "green"  ? '<circle cx="6" cy="6" r="3.5"/>'                                    // calm
+  : s === "yellow" ? `<polygon points="${polyPoints(4, 5.0, 6, 6, -Math.PI/2)}"/>`        // caution
+  :                  `<polygon points="${polyPoints(8, 5.6, 6, 6, Math.PI/8)}"/>`;        // stop
+  return `<svg class="glyph" width="${px}" height="${px}" viewBox="0 0 12 12" `
+       + `aria-hidden="true">${inner}</svg>`;
+}
+const GLYPH = new Proxy({}, { get: (_, s) => statusGlyph(s, 10) });
+const fmt = n => n === null || n === undefined ? "—" : n.toLocaleString();
+const el = (t, c, h) => { const e = document.createElement(t); if(c) e.className = c;
+  if(h !== undefined) e.innerHTML = h; return e; };
+
+/* ---- theme toggle: must beat the media query in BOTH directions ---- */
+const root = document.documentElement;
+document.getElementById("themeBtn").onclick = () => {
+  const dark = matchMedia("(prefers-color-scheme:dark)").matches;
+  const cur = root.dataset.theme || (dark ? "dark" : "light");
+  root.dataset.theme = cur === "dark" ? "light" : "dark";
+  drawCharts();
+};
+
+const days = DATA.days, T = DATA.totals;
+let selected = days.length - 1;
+
+document.getElementById("range").textContent =
+  `${T.days} days · ${T.first} → ${T.last} · ${fmt(T.dns)} DNS queries, ${fmt(T.http)} HTTP hits, ${fmt(T.unique_sources)} unique sources`;
+
+/* True equilateral triangle: height = side x sqrt(3)/2, not the usual
+   CSS-border isosceles approximation. */
+function triSVG(up){
+  const s = 9, h = +(s * Math.sqrt(3) / 2).toFixed(2);
+  const pts = up ? `${s/2},0 ${s},${h} 0,${h}` : `0,0 ${s},0 ${s/2},${h}`;
+  return `<svg width="${s}" height="${h}" viewBox="0 0 ${s} ${h}" aria-hidden="true">`
+       + `<polygon points="${pts}"/></svg>`;
+}
+
+/* Day-over-day delta. Returns a neutral mark — see the .trend CSS note for why
+   this never borrows the status hues. */
+function trendMark(cur, prev, partial, prevDay){
+  const wrap = el("span","trend");
+  const plain = (txt, why) => { wrap.className = "trend flat"; wrap.textContent = txt;
+                                if(why){ wrap.title = why; wrap.setAttribute("aria-label", why); }
+                                return wrap; };
+  if(partial)  return plain("—", "partial day — not comparable to a full one");
+  if(!prevDay) return plain("—", "no previous day to compare against");
+  if(cur === null || cur === undefined || prev === null || prev === undefined)
+    return plain("—", "one of the two days has no data");
+  if(prev === 0) return plain(cur === 0 ? "=" : "new", "no baseline the previous day");
+  const pct = (cur - prev) / prev * 100;
+  if(Math.abs(pct) < 0.5) return plain("=", "unchanged vs the previous day");
+  const up = pct > 0, a = Math.abs(pct);
+  // Sign is redundant with the triangle by design — belt and braces reads
+  // faster than either alone. U+2212 minus, not a hyphen, so it lines up
+  // under tabular figures.
+  const label = (up ? "+" : "−") + (a >= 100 ? Math.round(a) : a.toFixed(1)) + "%";
+  // The percentage sits at the tip: above an up-triangle, below a down one.
+  wrap.innerHTML = up ? `<span>${label}</span>${triSVG(true)}`
+                      : `${triSVG(false)}<span>${label}</span>`;
+  const why = `${up ? "up" : "down"} ${label} vs ${prevDay.date} (${fmt(prev)})`;
+  wrap.title = why; wrap.setAttribute("aria-label", why);
+  return wrap;
+}
+
+/* ---- hero ---- */
+function drawHero(){
+  const d = days[selected];
+  const h = document.getElementById("hero");
+  h.innerHTML = "";
+  const l = el("div","hero-l");
+  l.appendChild(el("div","eyebrow", selected === days.length-1 ? "most recent day" : "selected day"));
+  l.appendChild(el("div","hero-date", d.date + (d.partial ? " <span style='font-size:.6em;color:var(--ink-3)'>partial</span>" : "")));
+  l.appendChild(el("div","", `<span class="chip s-${d.status}"><span class="g">${GLYPH[d.status]}</span>${WORD[d.status]}</span>`));
+  h.appendChild(l);
+  const tiles = el("div","tiles");
+  const p = selected > 0 ? days[selected - 1] : null;
+  const cells = [
+    ["DNS ext", d.dns_external, p && p.dns_external, `${fmt(d.dns_queries)} total`],
+    ["HTTP", d.http, p && p.http, `base ${fmt(d.baseline.http)}`],
+    ["drops", d.dns_drops, p && p.dns_drops, "malformed / QR=1"],
+    ["new IPs", d.new_sources, p && p.new_sources, "first seen"],
+    ["UFW", d.ufw, p && p.ufw, d.ufw === null ? "no data retained" : "blocked packets"],
+  ];
+  for(const [k,v,pv,sub] of cells){
+    const t = el("div","tile");
+    const row = el("div","row");
+    row.appendChild(el("div","v", fmt(v)));
+    row.appendChild(trendMark(v, pv, d.partial, p));
+    t.appendChild(row);
+    t.appendChild(el("div","k", k));
+    t.appendChild(el("div","d", sub));
+    tiles.appendChild(t);
+  }
+  h.appendChild(tiles);
+}
+
+/* ---- calendar, grouped by month ---- */
+function drawCal(){
+  const cal = document.getElementById("cal");
+  cal.innerHTML = "";
+  const months = {};
+  days.forEach((d,i) => { const m = d.date.slice(0,7); (months[m] ||= []).push(i); });
+  for(const [m, idxs] of Object.entries(months)){
+    const box = el("div","month");
+    box.appendChild(el("div","lbl", m));
+    const grid = el("div","cal");
+    for(const i of idxs){
+      const d = days[i];
+      // 12px in a 26px cell: big enough that the octagon's flat edges survive
+      // and it never collapses into the green circle.
+      const b = el("button", "cell" + (d.partial ? " partial" : ""), statusGlyph(d.status, 12));
+      b.dataset.s = d.status; b.type = "button";
+      b.setAttribute("aria-pressed", i === selected ? "true" : "false");
+      b.setAttribute("aria-label", `${d.date}: ${WORD[d.status]}, ${fmt(d.http)} HTTP hits`);
+      b.title = `${d.date} · ${WORD[d.status]} · DNS ${fmt(d.dns_queries)} · HTTP ${fmt(d.http)}`;
+      b.onclick = () => { selected = i; render(); };
+      b.onkeydown = e => {
+        const n = e.key === "ArrowRight" ? i+1 : e.key === "ArrowLeft" ? i-1 : null;
+        if(n !== null && n >= 0 && n < days.length){ e.preventDefault(); selected = n; render();
+          document.querySelectorAll(".cell")[n].focus(); }
+      };
+      grid.appendChild(b);
+    }
+    box.appendChild(grid);
+    cal.appendChild(box);
+  }
+}
+
+/* ---- detail ---- */
+function tbl(head, rows, ipcol){
+  if(!rows.length) return el("div","", `<span style="color:var(--ink-3);font-size:.8rem">none</span>`);
+  const s = el("div","scroll"); const t = el("table");
+  t.innerHTML = `<thead><tr><th>${head[0]}</th><th style="text-align:right">${head[1]}</th></tr></thead>`;
+  const tb = el("tbody");
+  for(const [k,v] of rows){
+    const tr = el("tr");
+    tr.appendChild(el("td", ipcol ? "ip" : "", String(k).replace(/</g,"&lt;").slice(0,68)));
+    tr.appendChild(el("td","n", fmt(v)));
+    tb.appendChild(tr);
+  }
+  t.appendChild(tb); s.appendChild(t); return s;
+}
+
+function drawDetail(){
+  const d = days[selected];
+  const p = document.getElementById("detail");
+  p.innerHTML = "";
+  const h = el("div","panel-h");
+  h.appendChild(el("h2","", `${d.date} <span class="chip s-${d.status}" style="margin-left:8px"><span class="g">${GLYPH[d.status]}</span>${WORD[d.status]}</span>`));
+  h.appendChild(el("span","eyebrow", d.partial ? "still accumulating" : "complete day"));
+  p.appendChild(h);
+
+  if(d.narrative){
+    p.appendChild(el("div","narrative", d.narrative.replace(/</g,"&lt;")));
+  }
+
+  p.appendChild(el("div","eyebrow","why this grade"));
+  const ul = el("ul","why");
+  for(const w of d.why){
+    const li = el("li", d.status === "green" ? "" : "hit", w);
+    if(d.status !== "green") li.style.color = `var(--${d.status === "red" ? "bad" : "warn"})`;
+    ul.appendChild(li);
+  }
+  p.appendChild(ul);
+
+  const g = el("div","grid2"); g.style.marginTop = "16px";
+  const c1 = el("div"); c1.appendChild(el("div","eyebrow","top sources (DNS + HTTP)"));
+  c1.appendChild(tbl(["source ip","hits"], d.sources, true));
+  const c2 = el("div"); c2.appendChild(el("div","eyebrow","DNS probe families"));
+  c2.appendChild(tbl(["family","queries"], d.families));
+  g.appendChild(c1); g.appendChild(c2);
+  p.appendChild(g);
+
+  const g2 = el("div","grid2"); g2.style.marginTop = "16px";
+  const c3 = el("div"); c3.appendChild(el("div","eyebrow","HTTP paths"));
+  c3.appendChild(tbl(["path","hits"], d.http_paths, true));
+  const c4 = el("div"); c4.appendChild(el("div","eyebrow","user agents"));
+  c4.appendChild(tbl(["ua","hits"], d.user_agents));
+  g2.appendChild(c3); g2.appendChild(c4);
+  p.appendChild(g2);
+}
+
+/* ---- charts: area + line, crosshair tooltip, emphasized selection ---- */
+function lineChart(mount, key, color){
+  const box = document.getElementById(mount);
+  box.innerHTML = "";
+  const W = box.clientWidth || 480, H = 150, PL = 42, PR = 8, PT = 10, PB = 20;
+  const vals = days.map(d => d[key]);
+  const max = Math.max(...vals, 1);
+  const x = i => PL + (i / Math.max(days.length - 1, 1)) * (W - PL - PR);
+  const y = v => PT + (1 - v / max) * (H - PT - PB);
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.setAttribute("height", H);
+  svg.setAttribute("role","img");
+  svg.setAttribute("aria-label", `${key} per day, max ${max}`);
+
+  // recessive grid + axis labels
+  for(const f of [0, .5, 1]){
+    const gy = y(max * f);
+    const ln = document.createElementNS(ns,"line");
+    ln.setAttribute("x1",PL); ln.setAttribute("x2",W-PR); ln.setAttribute("y1",gy); ln.setAttribute("y2",gy);
+    ln.setAttribute("stroke","var(--border)"); ln.setAttribute("stroke-width","1");
+    svg.appendChild(ln);
+    const tx = document.createElementNS(ns,"text");
+    tx.setAttribute("x", PL-6); tx.setAttribute("y", gy+3); tx.setAttribute("text-anchor","end");
+    tx.setAttribute("font-size","11"); tx.setAttribute("fill","var(--ink-3)");
+    tx.setAttribute("font-family","var(--mono)");
+    tx.textContent = Math.round(max*f).toLocaleString();
+    svg.appendChild(tx);
+  }
+  const area = document.createElementNS(ns,"path");
+  area.setAttribute("d", `M${x(0)},${y(0)} ` + vals.map((v,i)=>`L${x(i)},${y(v)}`).join(" ") + ` L${x(vals.length-1)},${y(0)} Z`);
+  area.setAttribute("fill", color); area.setAttribute("opacity",".13");
+  svg.appendChild(area);
+  const path = document.createElementNS(ns,"path");
+  path.setAttribute("d", "M" + vals.map((v,i)=>`${x(i)},${y(v)}`).join(" L"));
+  path.setAttribute("fill","none"); path.setAttribute("stroke", color); path.setAttribute("stroke-width","2");
+  path.setAttribute("stroke-linejoin","round");
+  svg.appendChild(path);
+  // emphasized endpoint + current selection
+  for(const [i, r] of [[days.length-1, 3], [selected, 4]]){
+    const c = document.createElementNS(ns,"circle");
+    c.setAttribute("cx",x(i)); c.setAttribute("cy",y(vals[i])); c.setAttribute("r",r);
+    c.setAttribute("fill", i === selected ? "var(--brand)" : color);
+    c.setAttribute("stroke","var(--surface)"); c.setAttribute("stroke-width","2");
+    svg.appendChild(c);
+  }
+  const cross = document.createElementNS(ns,"line");
+  cross.setAttribute("stroke","var(--ink-3)"); cross.setAttribute("stroke-width","1");
+  cross.setAttribute("y1",PT); cross.setAttribute("y2",H-PB); cross.setAttribute("opacity","0");
+  svg.appendChild(cross);
+  box.appendChild(svg);
+
+  const tip = el("div","tip"); box.appendChild(tip);
+  svg.addEventListener("pointermove", ev => {
+    const r = svg.getBoundingClientRect();
+    const i = Math.round(((ev.clientX - r.left) / r.width * W - PL) / (W-PL-PR) * (days.length-1));
+    if(i < 0 || i >= days.length) return;
+    cross.setAttribute("opacity",".35");
+    cross.setAttribute("x1",x(i)); cross.setAttribute("x2",x(i));
+    tip.style.opacity = 1;
+    tip.style.left = Math.min(Math.max(x(i)/W*r.width - 50, 0), r.width-110) + "px";
+    tip.style.top = "0px";
+    tip.textContent = `${days[i].date} · ${fmt(vals[i])}`;
+  });
+  svg.addEventListener("pointerleave", () => { cross.setAttribute("opacity","0"); tip.style.opacity = 0; });
+  svg.addEventListener("click", ev => {
+    const r = svg.getBoundingClientRect();
+    const i = Math.round(((ev.clientX - r.left) / r.width * W - PL) / (W-PL-PR) * (days.length-1));
+    if(i >= 0 && i < days.length){ selected = i; render(); }
+  });
+}
+
+function drawCharts(){
+  const cs = getComputedStyle(document.documentElement);
+  lineChart("dnsChart","dns_queries", cs.getPropertyValue("--accent").trim());
+  // status hues are reserved; a lone series reuses the accent rather than borrowing --warn
+  lineChart("httpChart","http", cs.getPropertyValue("--accent").trim());
+  const mx = Math.max(...days.map(d=>d.http));
+  document.getElementById("dnsMeta").textContent = "stable band";
+  document.getElementById("httpMeta").textContent = `peak ${fmt(mx)}`;
+}
+
+function drawRubric(){
+  const R = DATA.rubric;
+  document.getElementById("rubric").innerHTML = `
+    A day is graded against the median of its previous ${R.trailing_days} complete days —
+    relative, not absolute, because one flood would poison a mean/σ band and hide
+    everything after it. Colour grades <em>deviation</em>; the panel above always shows the
+    full counts.
+    <div class="scroll" style="margin-top:12px"><table>
+    <thead><tr><th>grade</th><th style="text-align:left">fires when</th></tr></thead><tbody>
+    <tr><td><span class="chip s-yellow"><span class="g">${statusGlyph("yellow",9)}</span>look</span></td>
+        <td style="text-align:left">HTTP ≥${R.http_spike_yellow}× median · DNS ≥${R.dns_spike_yellow}× · exploit-shaped HTTP ≥${R.exploit_spike_yellow}× · new source IPs ≥${R.new_source_spike_yellow}× · ≥${R.cve_trigger_yellow} CVE-trigger shapes</td></tr>
+    <tr><td><span class="chip s-red"><span class="g">${statusGlyph("red",9)}</span>real</span></td>
+        <td style="text-align:left">HTTP ≥${R.http_spike_red}× median · DNS ≥${R.dns_spike_red}× · any oversized QR=1 from a non-research source (reflection-victim shape)</td></tr>
+    </tbody></table></div>`;
+}
+
+/* Legend is generated from statusGlyph too, so it can never drift from the
+   shapes actually drawn in the cells. */
+function drawLegend(){
+  const map = [["green","--ok"],["yellow","--warn"],["red","--bad"]];
+  document.getElementById("legend").innerHTML =
+    map.map(([s,v]) => `<span class="k" style="color:var(${v})">`
+      + `${statusGlyph(s,10)}${WORD[s]}</span>`).join("")
+    + `<span class="k" style="color:var(--ink-3)">┈ partial day</span>`;
+}
+
+function render(){ drawHero(); drawCal(); drawDetail(); drawCharts(); }
+drawLegend();
+drawRubric();
+render();
+document.getElementById("foot").innerHTML =
+  `generated ${DATA.generated} · ${T.green} routine / ${T.yellow} worth a look / ${T.red} something real<br>` +
+  `deterministic: counts and grades are computed, never inferred. narrative panels are written separately.`;
+addEventListener("resize", drawCharts);
+</script>

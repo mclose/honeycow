@@ -32,6 +32,7 @@ if [ "$DRY_RUN" = 1 ]; then
     log "[dry-run] repo=$REPO_DIR data=$ANALYSIS_DIR"
     log "[dry-run] would run: make -C $REPO_DIR pull ANALYSIS_DIR=$ANALYSIS_DIR"
     log "[dry-run] would run: make -C $REPO_DIR ingest ANALYSIS_DIR=$ANALYSIS_DIR"
+    log "[dry-run] would run: make -C $REPO_DIR dashboard ANALYSIS_DIR=$ANALYSIS_DIR"
     # ingest's own --dry-run reports new-vs-existing without writing.
     make -C "$REPO_DIR" ingest ANALYSIS_DIR="$ANALYSIS_DIR" DRY_RUN=1 || true
     exit 0
@@ -47,4 +48,7 @@ fi
 log "start  repo=$REPO_DIR data=$ANALYSIS_DIR"
 make -C "$REPO_DIR" pull   ANALYSIS_DIR="$ANALYSIS_DIR"
 make -C "$REPO_DIR" ingest ANALYSIS_DIR="$ANALYSIS_DIR"
+# Render straight into the directory caddy-claude serves. No copy step: the
+# SQLite index and the web server are both on this host.
+make -C "$REPO_DIR" dashboard ANALYSIS_DIR="$ANALYSIS_DIR"
 log "done"

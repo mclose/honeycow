@@ -50,7 +50,7 @@ HOST ?= 127.0.0.1
         up-prod down-prod logs-prod \
         logs-wire report-wire \
         deploy setup-remote _sandbox_check \
-        bump tag gh-release pull report report-raw ingest refresh install-timer clean
+        bump tag gh-release pull report report-raw ingest dashboard refresh install-timer clean
 
 help:  ## List targets
 	@awk 'BEGIN{FS=":.*##"; printf "HoneyCow v$(VERSION) — targets:\n"} \
@@ -250,7 +250,16 @@ ingest:  ## Ingest ALL of $(EVENTS)+$(UFW) into SQLite $(DB) (DRY_RUN=1 preview,
 	@tools/ingest.py --db $(DB) --events $(EVENTS) --ufw $(UFW) \
 		$(if $(DRY_RUN),--dry-run) $(if $(REBUILD),--rebuild)
 
-refresh:  ## pull + ingest in one step (what the nightly timer runs; DRY_RUN=1 to preview)
+# Rendered straight into the directory caddy-claude already serves — the DB and
+# the web server live on the same host, so there is no copy step.
+DASH_DIR   ?= $(HOME)/www/honeycow-dash
+DASH_NOTES ?= $(ANALYSIS_DIR)/notes
+dashboard:  ## Render the daily-watch dashboard to $(DASH_DIR)/index.html
+	@mkdir -p $(DASH_DIR)
+	@tools/dashboard.py --db $(DB) --out $(DASH_DIR)/index.html \
+		$(if $(wildcard $(DASH_NOTES)),--notes $(DASH_NOTES))
+
+refresh:  ## pull + ingest + render dashboard (what the nightly timer runs; DRY_RUN=1 to preview)
 	@tools/refresh-index.sh $(if $(DRY_RUN),--dry-run)
 
 install-timer:  ## Install + enable the nightly refresh systemd *user* timer on this host

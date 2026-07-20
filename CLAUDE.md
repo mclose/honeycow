@@ -133,8 +133,44 @@ cert via DNS-01 over BIND nsupdate). All three are required.
 - `static/index.html` — the HTTP closer page.
 - `caddy/Caddyfile` — TLS + reverse-proxy config (prod stack only).
 - `tools/healthcheck.py` — container healthcheck (SOA query against self).
-- `tools/morning_report.py` — daily traffic summary; see [[morning-report]]
+- `tools/morning_report.py` — daily traffic summary. Three input modes:
+  `--events` (raw JSONL), `--db` (the SQLite index, the default for
+  `make report`), `--herd` (merged per-site digests). See [[morning-report]]
   feedback in agent memory.
+- `tools/pull-logs.sh` — **incremental** fetch of the raw logs from the VPS:
+  byte-tail of the append-only `events.jsonl` + `rsync --append-verify` of
+  `ufw.log*`. Byte-identical to a full pull; ships ~140 KB instead of 237 MB.
+- `tools/ingest.py` — builds the SQLite analysis index. Idempotent via a
+  per-row `rowhash`, so re-ingesting overlapping data never double-counts.
+- `tools/dashboard.py` + `dashboard_template.html` — renders the daily-watch
+  page. The grading rubric is one config block at the top of the script.
+- `tools/refresh-index.sh` — pull + ingest + render, under a lockfile. What
+  the systemd timer runs (`deploy/systemd/`).
+
+## Analysis pipeline (runs on claude, NOT the honeypot)
+
+The raw logs live on the honeycow VPS; analysis runs on the report host and
+pulls them down. `make refresh` = `pull` → `ingest` → `dashboard`, fired
+4-hourly by a systemd **user** timer anchored to America/Chicago.
+
+    make pull       # incremental: only the new delta crosses the wire
+    make ingest     # (re)build ~/honeycow-analysis/honeycow.db
+    make report     # fast report from the index (report-raw reads raw files)
+    make dashboard  # render to ~/www/honeycow-dash, served by caddy-claude
+                    # at honeycow.lab.deflationhollow.net (tailnet-only)
+
+Rules that matter here:
+
+- **The JSONL is the capture-of-record; the DB is a derived, rebuildable
+  index.** If it is ever wrong, `make ingest REBUILD=1`. Never treat the DB
+  as the source of truth.
+- **The data dir is persistent** (`~/honeycow-analysis`, never `/tmp`). The
+  DB accumulates, so its UFW history outlives the VPS's ~5-week rotation.
+- **The dashboard detects; it does not interpret.** Counts and grades are
+  computed and never inferred. Narrative goes in a separate per-day slot
+  (`--notes`), written on demand — not auto-generated.
+- **Colour grades deviation, the detail panel shows everything.** A routine
+  signal must not drive colour, or the calendar trains you to ignore it.
 
 ## Protocol Constraints
 

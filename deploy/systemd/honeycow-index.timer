@@ -1,14 +1,22 @@
-# Fires the index refresh once a day. Persistent=true so a run missed while
-# the host was off is caught up on next boot. Randomized delay keeps it off a
-# round-number minute (politeness to the honeycow VPS). See the .service for
-# install steps.
+# Refreshes the index + dashboard every 4 hours, anchored to Matthew's clock so
+# 06:00 lands with coffee. Chicago is named explicitly rather than converted to
+# UTC: systemd >= 252 resolves the zone itself, so this stays correct across DST
+# without the hourly-tick + `TZ=` guard that cron needs on this host.
+#
+# 4-hourly is affordable only because the pull is incremental (~140 KB and ~16 s
+# per run, vs 237 MB before) — the page is never more than a few hours stale,
+# which is why it needs no "refresh" button and therefore no backend.
+#
+# Persistent=true so a run missed while the host was off is caught up on next
+# boot. Randomized delay keeps it off a round-number minute (politeness to the
+# honeycow VPS). See the .service for install steps.
 [Unit]
-Description=HoneyCow: daily SQLite index refresh
+Description=HoneyCow: 4-hourly SQLite index + dashboard refresh
 Documentation=file:%h/projects/honeycow/docs/deployment.md
 
 [Timer]
-OnCalendar=*-*-* 05:30:00
-RandomizedDelaySec=900
+OnCalendar=*-*-* 06,10,14,18,22:00:00 America/Chicago
+RandomizedDelaySec=600
 Persistent=true
 
 [Install]

@@ -8,9 +8,14 @@
 #
 #   * events.jsonl — pull just the new tail (bytes past what we already have).
 #     The local file size IS the offset, so there is no state file to corrupt.
-#   * ufw.log*      — rsync --append-verify (the herd's chosen mechanism): the
-#     growing current file sends only its delta, immutable .gz rotations are
-#     skipped, and a rotation (file shrinks) self-heals via full re-transfer.
+#   * ufw.log*      — plain `rsync -a`. Its rolling-checksum delta already
+#     ships only the changed blocks of the growing current file, so the wire
+#     cost matches --append-verify without the correctness trap: when logrotate
+#     shrinks ufw.log, --append-verify SILENTLY SKIPS the file (exit 0, no
+#     output, destination untouched) because the source is shorter than the
+#     destination. That stranded the local copy at the pre-rotation content and
+#     lost every line written after it — invisibly, until someone noticed UFW
+#     had stopped appearing in the report. Plain rsync re-sends and self-heals.
 #
 # The result is byte-identical to a full pull (append-only guarantees it), so
 # the downstream SQLite index is unchanged. Idempotent ingest tolerates any
@@ -74,25 +79,49 @@ else
 fi
 
 # --- ufw.log*: rsync only the changed bytes, then recombine for ingest -------
-# sudo on the remote reads the syslog-owned files; fall back to plain rsync
-# (works if the invoking user can already read them).
+# Rotation renames files (ufw.log.1 -> ufw.log.2.gz), so a given name holds
+# different content over time and rsync overwrites it accordingly. That is
+# fine: ufw-raw/ is a staging area, not the archive. The SQLite index is the
+# archive — ingest is idempotent and accumulating, so anything pulled here has
+# been ingested many times over before it ages off the VPS.
 rsync_ufw() {
-    local extra=("$@")
-    rsync -a --append-verify "${extra[@]}" --rsync-path="sudo rsync" \
-        "$VPS:/var/log/ufw.log*" "$DIR/ufw-raw/" 2>/dev/null || \
-    rsync -a --append-verify "${extra[@]}" \
-        "$VPS:/var/log/ufw.log*" "$DIR/ufw-raw/"
+    local err rc=0
+    err=$(mktemp)
+    # sudo on the remote reads the syslog-owned files...
+    rsync -a "$@" --rsync-path="sudo rsync" \
+        "$VPS:/var/log/ufw.log*" "$DIR/ufw-raw/" 2>"$err" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        # ...falling back to plain rsync when remote sudo is unavailable (works
+        # if the invoking user can already read them). Only when THAT fails too
+        # do we surface both errors — the old `2>/dev/null` swallowed the sudo
+        # attempt's stderr unconditionally, so a genuine failure looked silent.
+        rc=0
+        rsync -a "$@" "$VPS:/var/log/ufw.log*" "$DIR/ufw-raw/" || rc=$?
+        if [ "$rc" -ne 0 ]; then
+            echo "ufw rsync failed; sudo attempt reported:" >&2
+            cat "$err" >&2
+        fi
+    fi
+    rm -f "$err"
+    return "$rc"
 }
 
 if [ "$DRY_RUN" -eq 1 ]; then
-    echo "[dry-run] ufw.log*: rsync --append-verify (transfers only changed bytes):"
-    rsync_ufw --dry-run --stats 2>/dev/null | grep -E 'Number of|Total transferred' \
+    echo "[dry-run] ufw.log*: rsync -a (transfers only changed blocks):"
+    rsync_ufw --dry-run --stats | grep -E 'Number of|Total transferred' \
         | sed 's/^/    /' || true
 else
     [ "$FULL" -eq 1 ] && rm -f "$DIR"/ufw-raw/ufw.log*
+    ufw_before=0
+    [ -f "$DIR/ufw.log" ] && ufw_before=$(wc -l < "$DIR/ufw.log")
     rsync_ufw
     # Recombine oldest-first (local only, no network) into the file ingest reads.
     # shellcheck disable=SC2046  # deliberate word-split: multiple rotation files
     ( cd "$DIR/ufw-raw" && zcat -f $(ls -tr ufw.log*) ) > "$DIR/ufw.log"
-    echo "ufw: $(wc -l < "$DIR/ufw.log") lines total"
+    ufw_after=$(wc -l < "$DIR/ufw.log")
+    # Report the delta, not just the total: a stuck pull reads as "+0 lines"
+    # run after run, which is the signal that went unnoticed last time. A
+    # NEGATIVE delta is normal — it means a rotation aged off the VPS, and the
+    # dropped lines are already in the SQLite index.
+    echo "ufw: $ufw_after lines total ($((ufw_after - ufw_before)) vs last pull)"
 fi

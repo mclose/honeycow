@@ -27,14 +27,16 @@ name: honeycow
 #
 #   4. wire-monitoring sidecars are introduced:
 #        - tcpdump: passive pcap capture on the host's network stack,
-#          BPF-filtered to ports 53/80/443; 7-day hourly ring buffer.
+#          BPF-filtered to ports 53/80/443; hourly files, pruned by
+#          wire-cleanup (tcpdump itself does NOT self-prune).
 #          Independent ground truth in case our own JSONL parser drops
 #          packets or in case we need to reconstruct exactly what hit
 #          us during an abuse complaint window.
 #        - zeek: passive protocol analyzer on the same host stack;
 #          emits structured conn/dns/http logs that can be diffed
 #          against honeycow's events.jsonl to surface drops.
-#        - wire-cleanup: deletes Zeek logs older than 7d.
+#        - wire-cleanup: prunes Zeek logs (7d) and pcaps (14d). This
+#          loop is the only thing bounding either volume.
 #      All three use `network_mode: host` + NET_ADMIN/NET_RAW. This is
 #      a real privilege expansion vs. honey-ns/caddy; they're confined
 #      to passive packet observation but still need to be deliberate.
@@ -133,8 +135,16 @@ services:
       - ./acme/tsig.key:/etc/acme/tsig.key:ro
 
   # Wire-monitoring sidecar: raw pcap capture, host network, BPF-filtered.
-  # 7-day hourly ring buffer (168 files, rotate every 3600s = 1h).
-  # The strftime tokens in -w give each capture a sortable filename.
+  # Hourly files (-G 3600); the strftime tokens in -w give each capture a
+  # sortable filename. Retention is NOT tcpdump's job -- see wire-cleanup.
+  #
+  # There is deliberately no -W here. Per tcpdump(1), -W only builds an
+  # overwriting ring buffer in conjunction with -C (size-based rotation);
+  # combined with -G it instead caps the file count and *exits with status 0
+  # at the limit*. Under restart:unless-stopped that gave a 7-day cycle of
+  # exit -> restart -> counter reset, and since strftime names every file
+  # uniquely, nothing was ever overwritten or deleted. The volume grew
+  # unbounded to 14 GB / 2373 files and took the disk to 90% (2026-08-26).
   tcpdump:
     build:
       context: .
@@ -156,8 +166,6 @@ services:
       - any
       - -G
       - "3600"
-      - -W
-      - "168"
       - -n
       - -U
       - -w
@@ -191,9 +199,20 @@ services:
     volumes:
       - honeycow_zeek:/zeek/logs
 
-  # Tiny housekeeping loop: prune Zeek log files older than 7 days
-  # hourly. tcpdump manages its own ring buffer; pcap volume needs no
-  # external cleanup.
+  # Tiny housekeeping loop, hourly: prune Zeek logs older than 7 days and
+  # pcaps older than 14. This loop is the ONLY thing bounding either volume.
+  #
+  # The retention asymmetry is deliberate. Zeek keeps the structured
+  # interpretation cheaply (~150 MB at 7d); pcaps keep the raw bytes
+  # expensively (~200 MB/day, so ~2.8 GB at 14d). 14 days is sized to the
+  # analysis cadence, not to tidiness: anything the daily-watch dashboard
+  # grades non-green should still have raw packets behind it by the time a
+  # human gets round to reading the report.
+  #
+  # /pcaps/keep/ is EXEMPT -- -maxdepth 1 never descends into it. Promote an
+  # hour's pcap there to hold it indefinitely when the morning report turns
+  # up something worth keeping the bytes for. Keep that set small and
+  # deliberate; it is the only pcap data worth putting in restic.
   wire-cleanup:
     image: alpine:3.20
     container_name: honeycow-wire-cleanup
@@ -208,10 +227,12 @@ services:
         while true; do
           find /zeek -type f -mtime +7 -delete 2>/dev/null || true
           find /zeek -type d -empty -delete 2>/dev/null || true
+          find /pcaps -maxdepth 1 -type f -name '*.pcap' -mtime +14 -delete 2>/dev/null || true
           sleep 3600
         done
     volumes:
       - honeycow_zeek:/zeek
+      - honeycow_pcaps:/pcaps
 
 volumes:
   caddy_data:

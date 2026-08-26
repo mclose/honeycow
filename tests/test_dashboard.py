@@ -30,6 +30,19 @@ def _db(tmp_path, rows_by_day, ufw_days=()):
             http.append((f"http-{day}-{i}", f"{day}T10:00:00+00:00", 0, "1.2.3.4",
                          5000, None, f"5.5.5.{i % 250}", None, "GET", "/", "h",
                          "ua", 10, 10, 1.0, spec.get("http_family", "other")))
+        # A reflection-shaped burst: many queries sharing ONE (src_ip, txid,
+        # src_port) tuple. Spread over `span` seconds so span_s is non-zero.
+        for b_i, b in enumerate(spec.get("bursts", [])):
+            for i in range(b["n"]):
+                sec = int(i * b.get("span", 10) / max(b["n"] - 1, 1))
+                dns.append((f"burst-{day}-{b_i}-{i}",
+                            f"{day}T11:00:{sec:02d}+00:00", 0, None, "udp",
+                            b["src_ip"], b.get("src_port", 29852), None, 38, "query",
+                            b.get("decision", "respond"), "synth_txt", None, 0, 1.0,
+                            b.get("dns_id", 32058), "QUERY", "NOERROR", 256, 1,
+                            "cam.ac.uk.", "TXT", 16, "IN", 1, "NOERROR", 1, 0, 0,
+                            293, 0, None, None, None, None, "other"))
+
     for day in ufw_days:
         ufw.append((f"ufw-{day}", f"{day}T10:00:00+00:00", 0, "7.7.7.7", "1.2.3.4",
                     "TCP", 80, "BLOCK"))
@@ -157,3 +170,67 @@ def test_totals_match_the_days(tmp_path):
     assert data["totals"]["http"] == sum(d["http"] for d in data["days"])
     assert data["totals"]["days"] == len(data["days"])
     json.dumps(data)  # must stay JSON-serialisable for embedding
+
+
+# --- reflection-shaped bursts (QR=0 side) -----------------------------------
+#
+# `qr_oversized_nonresearch` only sees QR=1 packets arriving. These pin the
+# other half: the QR=0 flood that makes honeycow the reflector. A real resolver
+# picks a fresh transaction id and source port per query, so many queries
+# sharing one tuple means the named source is a spoofed victim.
+
+def _burst_days(day, **burst):
+    """Ten quiet days, with one carrying a frozen-tuple burst.
+
+    The DNS baseline is deliberately high (500/day): a burst also *adds*
+    queries, and against a 10/day baseline it would trip the unrelated DNS
+    volume rule and mask what these tests are actually pinning.
+    """
+    days = {f"2026-03-{d:02d}": {"dns": 500, "http": 100} for d in range(1, 11)}
+    days[day] = {**days[day],
+                 "bursts": [{"src_ip": "163.5.59.20", "n": 25, **burst}]}
+    return days
+
+
+def test_frozen_txid_and_port_burst_is_red(tmp_path):
+    data = dash.build(_db(tmp_path, _burst_days("2026-03-05")))
+    hot = next(d for d in data["days"] if d["date"] == "2026-03-05")
+    assert hot["status"] == "red"
+    assert any("reflection shape" in w for w in hot["why"])
+    assert any("163.5.59.20" in w for w in hot["why"])
+    # every other day is untouched
+    assert {d["status"] for d in data["days"] if d["date"] != "2026-03-05"} == {"green"}
+
+
+def test_ordinary_retries_share_a_tuple_but_stay_green(tmp_path):
+    """Real resolvers DO reuse txid+port when retrying. That must not fire."""
+    data = dash.build(_db(tmp_path, _burst_days("2026-03-05", n=4)))
+    hot = next(d for d in data["days"] if d["date"] == "2026-03-05")
+    assert hot["status"] == "green"
+    assert not any("reflection" in w for w in hot["why"])
+
+
+def test_refused_burst_is_reported_but_does_not_drive_colour(tmp_path):
+    """Colour grades deviation; the defenses holding is not a deviation."""
+    data = dash.build(_db(tmp_path, _burst_days("2026-03-05",
+                                       decision="refuse")))
+    hot = next(d for d in data["days"] if d["date"] == "2026-03-05")
+    assert hot["status"] == "green"
+    assert any("REFUSED" in w and "reflection shape" in w for w in hot["why"])
+
+
+def test_self_test_traffic_is_never_a_reflection_victim(tmp_path):
+    data = dash.build(_db(tmp_path, _burst_days("2026-03-05",
+                                       src_ip="127.0.0.1")))
+    hot = next(d for d in data["days"] if d["date"] == "2026-03-05")
+    assert hot["status"] == "green"
+    assert not any("reflection" in w for w in hot["why"])
+
+
+def test_reflection_burst_reports_rate_and_bytes(tmp_path):
+    data = dash.build(_db(tmp_path, _burst_days("2026-03-05",
+                                       n=100, span=4)))
+    hot = next(d for d in data["days"] if d["date"] == "2026-03-05")
+    why = " ".join(hot["why"])
+    assert "100 answered TXT queries" in why
+    assert "/s" in why and "KB emitted" in why

@@ -80,6 +80,23 @@ cert via DNS-01 over BIND nsupdate). All three are required.
   when enabling templating — the `templates` directive landed in the host
   file but the container kept serving the pre-templating Caddyfile until
   it was restarted.
+- **`-W` does not give tcpdump a ring buffer.** `-W` only overwrites in
+  conjunction with `-C` (size-based rotation); with `-G` it caps the file
+  count and *exits at the limit*, and strftime tokens in `-w` mean every
+  file is uniquely named so nothing is overwritten anyway. Our
+  `-G 3600 -W 168` looked like a 7-day ring and was actually an unbounded
+  writer with a 7-day exit/restart tic. Nothing pruned the pcap volume from
+  2026-05-20 until it hit 14 GB and took the disk to 90% (2026-08-26).
+  Retention now lives in `wire-cleanup` (zeek 7d, pcaps 14d) — the one
+  place that bounds either volume. If you add another capture volume,
+  give it to `wire-cleanup` at the same time or it will grow forever.
+- **`/pcaps/keep/` is exempt from pruning.** `wire-cleanup` uses
+  `-maxdepth 1`, so a pcap promoted into `keep/` is held indefinitely. That
+  is the escape hatch that makes 14-day retention safe: when the morning
+  report finds something worth the raw bytes, copy that hour in before it
+  ages out. Keep the set small and deliberate — it is the only pcap data
+  worth backing up. (`backup-prep.sh` on the VPS deliberately excludes the
+  rotating pcaps; it stages `honeycow_logs`, zeek, caddy/acme and `/etc`.)
 - **Caddy + acme are mandatory, not opt-in.** honeycow.net needs HTTPS
   (Caddy terminates TLS) and honeycow itself can't (and shouldn't) terminate
   TLS. The merged `docker-compose.prod.yml` reflects this. There is no

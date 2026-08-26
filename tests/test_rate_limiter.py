@@ -52,3 +52,41 @@ def test_burst_then_throttle():
     assert rl.allow("10.0.0.1", "x") is True
     assert rl.allow("10.0.0.1", "x") is True
     assert rl.allow("10.0.0.1", "x") is False
+
+
+# --- the shipped sizing ------------------------------------------------------
+#
+# These pin the *defaults*, not the class: the 200/400 they replaced let the
+# 2026-08-03 spoofed burst (831 queries in 3.05s) through completely, so
+# honeycow reflected every packet at the victim. If someone loosens the
+# defaults again, these fail and say why.
+
+def _replay(monkeypatch, ip, per_sec):
+    """Feed `per_sec[i]` queries during second i, at the shipped defaults."""
+    import honey_ns as hn
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr(hn.time, "monotonic", lambda: clock["t"])
+    rl = hn.TokenBucketRateLimiter(hn.DEFAULT_UDP_RATELIMIT_RATE,
+                                   hn.DEFAULT_UDP_RATELIMIT_BURST)
+    allowed = total = 0
+    for sec, n in enumerate(per_sec):
+        for i in range(n):
+            clock["t"] = sec + i / n
+            total += 1
+            allowed += rl.allow(ip, "udp")
+    return allowed, total
+
+
+def test_defaults_clip_the_2026_08_03_reflection_burst(monkeypatch):
+    # Real per-second distribution of the burst, from the SQLite index.
+    allowed, total = _replay(monkeypatch, "163.5.59.20", [99, 270, 302, 160])
+    assert total == 831
+    assert allowed < total * 0.2, f"expected >80% clipped, answered {allowed}/{total}"
+
+
+def test_defaults_do_not_touch_the_busiest_legitimate_second(monkeypatch):
+    # 53 q/s is the fastest single second ever seen from a non-reflection
+    # source (a TXT prober, 2026-08-22). It must pass whole.
+    assert _replay(monkeypatch, "209.38.67.124", [53]) == (53, 53)
+    assert _replay(monkeypatch, "185.242.3.3", [33]) == (33, 33)

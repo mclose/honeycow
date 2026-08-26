@@ -58,6 +58,20 @@ RUBRIC = {
     "cve_trigger_yellow": 3,
     # Genuinely rare-by-nature: any occurrence is the point.
     "qr_oversized_nonresearch_red": 1,  # true reflection-victim shape
+    # The OTHER half of reflection. qr_oversized only sees QR=1 packets
+    # *arriving*; it is blind to the QR=0 flood that makes us the reflector.
+    # A real resolver picks a fresh transaction id and source port per query,
+    # so many queries sharing ONE (src_ip, txid, src_port) tuple means a
+    # spoofed source — the named IP is the victim, not the sender.
+    #
+    # 20 is a measured floor, not a guess. Over 100 days the tuple-group size
+    # distribution is: 167 groups at 2-4 (ordinary retries, which legitimately
+    # reuse txid+port), 4 at 5-9, 29 at 10-19 (all one slow scanner range,
+    # 216.180.246.0/24, spread over 50-120s), then NOTHING until a single group
+    # at 74 and a single group at 831. The gap between 19 and 74 is where this
+    # line belongs.
+    "reflection_burst_min_packets": 20,
+    "reflection_burst_red": 1,
     # A burst of never-before-seen sources suggests a new campaign found us.
     "new_source_spike_yellow": 4.0,
 }
@@ -112,6 +126,27 @@ def grade_day(day: dict, baseline: dict) -> tuple[str, list[str]]:
         why.append(f"{day['qr_oversized_nonresearch']} oversized QR=1 packet(s) from a "
                    "non-research source — reflection-victim shape")
 
+    # Colour is driven only by bursts we ANSWERED — that is when honeycow
+    # actually functioned as a reflector. A burst we refused still gets a line
+    # in `why` (the panel shows everything) but must not paint the day red:
+    # the defenses working is not a deviation.
+    answered = [b for b in day["reflection_bursts"] if b["answered"]]
+    refused = [b for b in day["reflection_bursts"] if not b["answered"]]
+    if len(answered) >= RUBRIC["reflection_burst_red"]:
+        status = _worst(status, "red")
+    for b in (answered + refused)[:3]:
+        rate = f", {b['n'] / b['span_s']:.0f}/s" if b["span_s"] >= 1 else ""
+        verb = "answered" if b["answered"] else "REFUSED"
+        emitted = (f", {b['out_bytes'] / 1024:.0f} KB emitted"
+                   if b["answered"] and b["out_bytes"] else "")
+        why.append(
+            f"{b['n']} {verb} {b['qtype'] or '?'} queries from {b['src_ip']} sharing one "
+            f"transaction id + source port over {b['span_s']:.1f}s{rate}{emitted} "
+            f"— spoofed-source reflection shape"
+        )
+    if len(day["reflection_bursts"]) > 3:
+        why.append(f"...and {len(day['reflection_bursts']) - 3} more reflection-shaped burst(s)")
+
     r = ratio(day["new_sources"], baseline["new_sources"])
     if day["new_sources"] and r >= RUBRIC["new_source_spike_yellow"]:
         status = _worst(status, "yellow")
@@ -154,6 +189,7 @@ def build(db_path: Path, notes_dir: Path | None = None) -> dict:
             "date": d, "dns_queries": 0, "dns_drops": 0, "dns_external": 0,
             "http": 0, "ufw": None, "exploit": 0, "cve_trigger": 0,
             "qr_oversized_nonresearch": 0, "new_sources": 0,
+            "reflection_bursts": [],
             "families": {}, "http_families": {}, "sources": {},
             "http_paths": {}, "user_agents": {},
         })
@@ -180,6 +216,27 @@ def build(db_path: Path, notes_dir: Path | None = None) -> dict:
             if r["drop_reason"] == "oversized_datagram" and r["src_port"] == 53:
                 if not ip_in_nets(ip, research_nets):
                     s["qr_oversized_nonresearch"] += 1
+
+    # --- reflection-shaped bursts: many queries, one frozen (txid, src_port) ---
+    # Done as its own GROUP BY rather than inside the row scan above because the
+    # signal IS the grouping. Ordinary retries share a tuple too, which is why
+    # the floor matters; see RUBRIC["reflection_burst_min_packets"].
+    for r in conn.execute(
+        "SELECT substr(ts,1,10) d, src_ip, dns_id, src_port, qtype, COUNT(*) n, "
+        "SUM(CASE WHEN decision='respond' THEN 1 ELSE 0 END) answered, "
+        "SUM(COALESCE(response_bytes,0)) out_bytes, "
+        "(julianday(MAX(ts)) - julianday(MIN(ts))) * 86400.0 span_s "
+        "FROM dns WHERE event='query' AND src_ip IS NOT NULL AND dns_id IS NOT NULL "
+        "GROUP BY d, src_ip, dns_id, src_port HAVING COUNT(*) >= ?",
+        (RUBRIC["reflection_burst_min_packets"],),
+    ):
+        if is_private_or_loopback(r["src_ip"] or ""):
+            continue  # our own healthcheck/self-tests, not a reflection victim
+        slot(r["d"])["reflection_bursts"].append({
+            "src_ip": r["src_ip"], "qtype": r["qtype"], "n": r["n"],
+            "answered": bool(r["answered"]), "out_bytes": r["out_bytes"] or 0,
+            "span_s": r["span_s"] or 0.0,
+        })
 
     for r in conn.execute(
         "SELECT substr(ts,1,10) d, client_ip, src_ip, family, path, user_agent FROM http"

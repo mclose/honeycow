@@ -55,8 +55,23 @@ DEFAULT_TCP_TIMEOUT = 5.0
 DEFAULT_TCP_MAX_CONNS = 50
 DEFAULT_TCP_ACCEPT_BACKLOG = 100
 DEFAULT_TCP_MAX_QUERIES_PER_CONN = 32
-DEFAULT_UDP_RATELIMIT_RATE = 200.0
-DEFAULT_UDP_RATELIMIT_BURST = 400
+# Per-source UDP token bucket. Sized against observed traffic, not intuition:
+# across 100 days honeycow averages 0.04 queries/sec, and the busiest single
+# second from any *non-reflection* source was 53 (a TXT prober on 2026-08-22),
+# with the next four at 33/33/32/31. A 20/s refill over a 40-token bucket
+# absorbs all of those untouched.
+#
+# The old 200/400 was ~10x looser than anything real. On 2026-08-03 a spoofed
+# burst of 831 queries in 3.05s (272/s) drew 1,010 tokens from that bucket and
+# was not clipped at all — honeycow reflected every packet at the victim.
+# At 20/40 that same replay answers 119 and drops 712 — 86% clipped — while the
+# busiest legitimate seconds ever observed (53, 33, 33, 32 q/s) pass untouched.
+#
+# Dropping costs nothing analytically: rate-limited queries are still logged
+# as `query_drop` with drop_reason="rate_limited". We withhold the *response*,
+# never the observation.
+DEFAULT_UDP_RATELIMIT_RATE = 20.0
+DEFAULT_UDP_RATELIMIT_BURST = 40
 # Hard cap on the per-source bucket dict. Without this, spoofed-source
 # floods can grow the dict unboundedly until the container's mem_limit
 # kicks in. 65536 covers any realistic scanner population by orders of

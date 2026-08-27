@@ -101,6 +101,27 @@ cert via DNS-01 over BIND nsupdate). All three are required.
   (Caddy terminates TLS) and honeycow itself can't (and shouldn't) terminate
   TLS. The merged `docker-compose.prod.yml` reflects this. There is no
   separate `docker-compose.caddy.yml` anymore.
+- **Compose `${VAR:-default}` shadows the Python default.** Every tunable
+  lives in up to four places: the constant in `honey_ns.py`, `.env.example`,
+  `docker-compose.yml` and `docker-compose.cow.yml`. Compose injects them as
+  `${HONEY_X:-<literal>}`, so whenever a var is absent from `.env` — and ours
+  are **commented out** — the *compose* fallback wins and the Python constant
+  is never read. Commented-out in `.env` looks like "the code default
+  applies"; it means the opposite. Changing only `honey_ns.py` changes
+  nothing in a containerized deploy. This cost a deploy on 2026-08-26: the
+  UDP rate limit went 200 -> 20, CI was green, `make deploy` succeeded, and a
+  live 80-query burst came back 80/80 answered because compose was still
+  injecting 200. `tests/test_deployment_files.py` now pins the compose and
+  `.env.example` values to the `honey_ns` constants, so they fail loudly
+  instead of drifting — keep that pin in place when adding a new tunable.
+- **Verify behaviour changes by exercising them, not by reading the constant
+  back.** In the incident above, `docker exec honeycow python3 -c "import
+  honey_ns; print(...)"` cheerfully printed `20.0` while the running process
+  used 200 — importing the module reads the file on disk, not the live
+  config. `docker exec honeycow printenv` shows what the process actually
+  got, and a real burst against `HONEY_PUBLIC_A` shows what it actually does.
+  Prefer the burst. Related: `make smoke` proves the synth path is alive, not
+  that a limit or threshold has the value you think.
 - **No EDNS / no recursion advertised.** AA=1, RA=0 on every synthesized
   response. EDNS OPT records are intentionally omitted. Responses cap
   at 512 bytes with TC=1 to force TCP fallback rather than EDNS-style

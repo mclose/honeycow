@@ -157,3 +157,55 @@ def test_systemd_units_are_host_agnostic():
     assert "142.93" not in svc and "142.93" not in tmr, "unit leaks a host IP"
     assert "OnCalendar=" in tmr
     assert "Persistent=true" in tmr
+
+
+# --- compose fallbacks must not shadow the code defaults --------------------
+#
+# Every honeycow tunable is written in up to four places: the Python default,
+# .env.example, docker-compose.yml, and docker-compose.cow.yml. Compose uses
+# `${VAR:-default}`, so when a var is absent from .env (ours are commented out)
+# the COMPOSE fallback wins and the Python default is never consulted.
+#
+# That bit us on 2026-08-26: the rate limit was lowered 200->20 in honey_ns.py,
+# shipped, deployed, and a live burst of 80 queries came back 80/80 answered
+# because compose was still injecting 200. Pin the two together so the next
+# person changing one is forced to change the other.
+
+def _compose_fallback(text: str, var: str) -> str:
+    import re
+    m = re.search(rf"\$\{{{var}:-([^}}]*)\}}", text)
+    assert m, f"{var} has no ${{VAR:-default}} fallback to check"
+    return m.group(1)
+
+
+def test_compose_ratelimit_fallbacks_match_code_defaults():
+    import honey_ns
+
+    expected = {
+        "HONEY_UDP_RATELIMIT_RATE": honey_ns.DEFAULT_UDP_RATELIMIT_RATE,
+        "HONEY_UDP_RATELIMIT_BURST": honey_ns.DEFAULT_UDP_RATELIMIT_BURST,
+    }
+    for name in ("docker-compose.yml", "docker-compose.cow.yml"):
+        text = (ROOT / name).read_text()
+        for var, code_default in expected.items():
+            got = float(_compose_fallback(text, var))
+            assert got == float(code_default), (
+                f"{name} injects {var}={got:g} but honey_ns default is "
+                f"{float(code_default):g} — compose wins at runtime, so the "
+                f"code default would never take effect"
+            )
+
+
+def test_env_example_ratelimit_matches_code_defaults():
+    import honey_ns
+
+    text = (ROOT / ".env.example").read_text()
+    for var, code_default in (
+        ("HONEY_UDP_RATELIMIT_RATE", honey_ns.DEFAULT_UDP_RATELIMIT_RATE),
+        ("HONEY_UDP_RATELIMIT_BURST", honey_ns.DEFAULT_UDP_RATELIMIT_BURST),
+    ):
+        line = next(ln for ln in text.splitlines() if ln.startswith(f"{var}="))
+        assert float(line.split("=", 1)[1]) == float(code_default), (
+            f".env.example documents {line!r}, which no longer matches the "
+            f"honey_ns default of {float(code_default):g}"
+        )

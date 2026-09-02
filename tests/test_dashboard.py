@@ -8,6 +8,7 @@ specific threshold numbers, which live in one config block by design.
 from __future__ import annotations
 
 import json
+import re
 
 import tools.dashboard as dash
 import tools.ingest as ingest
@@ -144,6 +145,10 @@ def test_render_is_self_contained_and_embeds_data(tmp_path):
     # No runtime network. (The SVG XML namespace URI is an identifier, not a
     # fetch — browsers never resolve it — so it is excluded deliberately.)
     stripped = html.replace("http://www.w3.org/2000/svg", "")
+    # A <link> carrying a data: URI is inert for the same reason: the bytes are
+    # already in this file and nothing is resolved. Only that shape is exempt --
+    # a <link> pointing at a real URL still trips the check below.
+    stripped = re.sub(r'<link\b[^>]*href="data:[^"]*"[^>]*>', "", stripped)
     for external in ("http://", "https://", "fetch(", "XMLHttpRequest",
                      "<script src", "<link "):
         assert external not in stripped, f"page reaches out via {external}"

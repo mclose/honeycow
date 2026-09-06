@@ -179,7 +179,15 @@ cert via DNS-01 over BIND nsupdate). All three are required.
 - `static/index.html` — the HTTP closer page.
 - `caddy/Caddyfile` — TLS + reverse-proxy config (prod stack only).
 - `tools/healthcheck.py` — container healthcheck (SOA query against self).
-- `tools/morning_report.py` — daily traffic summary. Three input modes:
+- `tools/morning_report.py` — daily traffic summary. Also announces new CVE
+  signatures: `ruminate`'s weekly scan auto-promotes drafted signatures into
+  `taxonomy/` and appends them to `state/promotions.jsonl`, which the report
+  reads (`--promotions`, best-effort — a missing or malformed file must never
+  cost you the report). Promotion is automatic because the manual review gate
+  stalled: 44 drafts, 1 promotion, May→Sep 2026. The real gate belongs at
+  *consumption* — when the signature matcher lands and taxonomy entries start
+  driving day colour, it must match only entries marked confirmed. Three input
+  modes:
   `--events` (raw JSONL), `--db` (the SQLite index, the default for
   `make report`), `--herd` (merged per-site digests). See [[morning-report]]
   feedback in agent memory.

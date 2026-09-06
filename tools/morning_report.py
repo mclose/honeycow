@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import collections
 import ipaddress
+import json
 import sqlite3
 import sys
 from datetime import UTC, datetime, timedelta
@@ -608,6 +609,44 @@ def load_from_db(
     return events, ufw
 
 
+def load_promotions(path: Path | None, since: datetime) -> list[dict]:
+    """New CVE signatures ruminate promoted into the taxonomy inside the window.
+
+    Cross-repo seam: `ruminate/scripts/weekly-scan.sh` appends one JSON object
+    per promotion to `state/promotions.jsonl`. Promotion is automatic — the
+    manual review gate stalled for months — so the report is where a new
+    signature announces itself. Best-effort by design: a missing or malformed
+    promotions file must never cost you the rest of the report.
+    """
+    if not path or not path.is_file():
+        return []
+    out = []
+    for line in path.read_text(errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+            day = datetime.fromisoformat(rec["date"]).replace(tzinfo=UTC)
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+            continue
+        if day >= since.replace(hour=0, minute=0, second=0, microsecond=0):
+            out.append(rec)
+    return out
+
+
+def render_promotions(promotions: list[dict]) -> None:
+    if not promotions:
+        return
+    section("new CVE signatures added to the taxonomy (ruminate)")
+    print(f"  {len(promotions)} promoted in window — honeycow now matches these shapes")
+    for rec in promotions[:20]:
+        title = rec.get("title") or "(no title)"
+        print(f"    {rec.get('date', '?')}  {rec.get('cve_id', '?'):<18} {title[:60]}")
+    if len(promotions) > 20:
+        print(f"    ...and {len(promotions) - 20} more")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--events", type=Path, default=None,
@@ -637,6 +676,10 @@ def main() -> int:
                     help="file listing known-research scanner CIDRs (same format as "
                          "config/source_exemptions.txt) so inbound QR=1 packets can "
                          "be split between scanner probes and reflection-victim shape")
+    ap.add_argument("--promotions", type=Path,
+                    default=Path.home() / "projects/ruminate/state/promotions.jsonl",
+                    help="ruminate promotions log; new CVE signatures added in the "
+                         "window are announced in the report (best-effort)")
     args = ap.parse_args()
 
     modes = [args.events is not None, args.db is not None, args.herd is not None]
@@ -681,6 +724,7 @@ def main() -> int:
     if research_nets:
         print(f"# research-CIDR filter: {len(research_nets)} network(s) loaded")
     render(events, ufw, cert_issued, our_nets=our_nets, research_nets=research_nets)
+    render_promotions(load_promotions(args.promotions, since))
     return 0
 
 

@@ -32,6 +32,7 @@ if [ "$DRY_RUN" = 1 ]; then
     log "[dry-run] repo=$REPO_DIR data=$ANALYSIS_DIR"
     log "[dry-run] would run: make -C $REPO_DIR pull ANALYSIS_DIR=$ANALYSIS_DIR"
     log "[dry-run] would run: make -C $REPO_DIR ingest ANALYSIS_DIR=$ANALYSIS_DIR"
+    log "[dry-run] would run: make -C $REPO_DIR annotate ANALYSIS_DIR=$ANALYSIS_DIR"
     log "[dry-run] would run: make -C $REPO_DIR dashboard ANALYSIS_DIR=$ANALYSIS_DIR"
     # ingest's own --dry-run reports new-vs-existing without writing.
     make -C "$REPO_DIR" ingest ANALYSIS_DIR="$ANALYSIS_DIR" DRY_RUN=1 || true
@@ -48,6 +49,12 @@ fi
 log "start  repo=$REPO_DIR data=$ANALYSIS_DIR"
 make -C "$REPO_DIR" pull   ANALYSIS_DIR="$ANALYSIS_DIR"
 make -C "$REPO_DIR" ingest ANALYSIS_DIR="$ANALYSIS_DIR"
+# Interpret the settled yellow/red days before rendering, so a new note lands
+# on the page in the same pass. Non-fatal on purpose: a failed API call must
+# still leave a rendered dashboard, and the page itself reports the gap (the
+# annotator writes _status.json; the dashboard counts un-annotated graded days).
+make -C "$REPO_DIR" annotate ANALYSIS_DIR="$ANALYSIS_DIR" \
+    || log "annotate failed — see $ANALYSIS_DIR/notes/_status.json"
 # Render straight into the directory caddy-claude serves. No copy step: the
 # SQLite index and the web server are both on this host.
 make -C "$REPO_DIR" dashboard ANALYSIS_DIR="$ANALYSIS_DIR"

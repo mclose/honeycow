@@ -123,3 +123,34 @@ def _ev_q(src_ip, qname, qclass="IN", qtype="A"):
         "ts": "2026-06-22T14:05:00+00:00",
         "_ts": datetime.fromisoformat("2026-06-22T14:05:00+00:00"),
     }
+
+
+def test_promotions_announce_new_signatures_in_window(tmp_path):
+    """Promotion is automatic, so the report is where a new signature announces
+    itself — the operator never visits the queue."""
+    from datetime import UTC, datetime, timedelta
+
+    from tools.morning_report import load_promotions
+
+    p = tmp_path / "promotions.jsonl"
+    p.write_text(
+        '{"date": "2026-09-06", "cve_id": "CVE-2026-1", "title": "Fresh"}\n'
+        '{"date": "2026-01-01", "cve_id": "CVE-2026-0", "title": "Stale"}\n')
+    since = datetime(2026, 9, 6, tzinfo=UTC) - timedelta(hours=24)
+    got = load_promotions(p, since)
+    assert [r["cve_id"] for r in got] == ["CVE-2026-1"]
+
+
+def test_promotions_reader_never_breaks_the_report(tmp_path):
+    """A cross-repo file we don't control must not be able to cost you the
+    morning report — missing, malformed, or half-written all degrade to []."""
+    from datetime import UTC, datetime
+
+    from tools.morning_report import load_promotions
+
+    since = datetime(2026, 9, 6, tzinfo=UTC)
+    assert load_promotions(None, since) == []
+    assert load_promotions(tmp_path / "absent.jsonl", since) == []
+    bad = tmp_path / "bad.jsonl"
+    bad.write_text('not json\n{"date": "nope", "cve_id": "X"}\n{"no_date": 1}\n\n')
+    assert load_promotions(bad, since) == []

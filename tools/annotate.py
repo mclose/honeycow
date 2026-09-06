@@ -231,10 +231,11 @@ def load_cve_context(taxonomy_dir: Path | None) -> list[dict]:
             if line.startswith((" ", "-", "#")) or ":" not in line:
                 continue
             k, _, v = line.partition(":")
-            if k.strip() in ("id", "title", "axis", "confidence", "summary"):
+            if k.strip() in ("cve_id", "vendor", "product", "vulnerability_class",
+                             "axis", "confidence"):
                 fields[k.strip()] = v.strip().strip("\"'")
         if fields:
-            fields.setdefault("id", p.stem)
+            fields.setdefault("cve_id", p.stem)
             out.append(fields)
     return out
 

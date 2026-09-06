@@ -167,12 +167,15 @@ def test_taxonomy_context_is_optional_and_never_fatal(tmp_path):
     tax = tmp_path / "tax"
     tax.mkdir()
     (tax / "cve_2026_5946.yaml").write_text(
-        'id: cve-2026-5946\ntitle: "BIND non-IN class"\naxis: trigger\n'
-        'match:\n  qclass: [CH, HS]\n')
+        'cve_id: CVE-2026-5946\nvendor: ISC\nproduct: BIND 9\n'
+        'vulnerability_class: dos\naxis: trigger\nconfidence: high\n'
+        'references:\n- https://example.test/a\n')
     got = ann.load_cve_context(tax)
-    assert got and got[0]["id"] == "cve-2026-5946"
-    assert got[0]["title"] == "BIND non-IN class"
-    assert "match" not in got[0]  # nested keys are not scraped as scalars
+    assert got and got[0]["cve_id"] == "CVE-2026-5946"
+    assert got[0]["vendor"] == "ISC"
+    assert got[0]["vulnerability_class"] == "dos"
+    # Nested list values must not be scraped as scalars.
+    assert "references" not in got[0]
 
 
 @pytest.mark.parametrize("rule,key", [

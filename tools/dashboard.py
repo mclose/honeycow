@@ -157,21 +157,73 @@ def grade_day(day: dict, baseline: dict) -> tuple[str, list[str]]:
     return status, why
 
 
-def load_narratives(notes_dir: Path | None) -> dict[str, str]:
+def load_narratives(notes_dir: Path | None) -> dict[str, dict]:
     """Read per-day prose from `<notes_dir>/YYYY-MM-DD.md`, if present.
 
     The dashboard is deterministic — it detects, it does not interpret. This is
-    the seam where interpretation gets in: a human (or, later, an
-    exception-triggered model call on yellow/red days) drops a markdown file
-    named for the day and the page renders it above the numbers. Building the
-    slot now keeps that choice open without committing to any automation.
+    the seam where interpretation gets in: a note file named for the day is
+    rendered above the numbers. `tools/annotate.py` fills that slot
+    automatically for non-green days; a human can drop one in by hand for any
+    day. Either way the note NEVER feeds a grade — colour stays earned by
+    counted evidence.
+
+    Optional frontmatter carries provenance so the page can say who wrote it:
+
+        ---
+        source: model
+        model: claude-opus-5
+        generated: 2026-09-06T15:40:00+00:00
+        ---
+
+    A file with no frontmatter is treated as hand-written, which is the right
+    default: every note that predates the annotator was typed by a person.
     """
-    out: dict[str, str] = {}
+    out: dict[str, dict] = {}
     if not notes_dir or not notes_dir.is_dir():
         return out
     for p in sorted(notes_dir.glob("*.md")):
-        out[p.stem] = p.read_text().strip()
+        raw = p.read_text().strip()
+        meta: dict[str, str] = {}
+        if raw.startswith("---\n"):
+            head, sep, body = raw[4:].partition("\n---")
+            if sep:
+                for line in head.splitlines():
+                    k, _, v = line.partition(":")
+                    if v:
+                        meta[k.strip()] = v.strip()
+                raw = body.lstrip("\n-").strip() or body.strip()
+        if not raw:
+            continue
+        out[p.stem] = {
+            "text": raw,
+            "source": meta.get("source", "human"),
+            "model": meta.get("model", ""),
+            "generated": meta.get("generated", ""),
+        }
     return out
+
+
+def annotator_health(days: list[dict], notes_dir: Path | None) -> dict:
+    """Is the note pipeline actually alive?
+
+    Two independent signals, on purpose. `_status.json` is what the annotator
+    says about its own last run — useful, but it goes stale silently if the
+    tool never runs at all. `missing` is computed here from the graded days and
+    the notes on disk, so it stays true even if the annotator is completely
+    dead. The operator may not look at this for weeks; the page has to be able
+    to say "nothing has interpreted these days" without being told.
+    """
+    health: dict = {"last_run": "", "ok": None, "error": "", "missing": []}
+    if notes_dir and (sf := notes_dir / "_status.json").is_file():
+        try:
+            st = json.loads(sf.read_text())
+            health.update({"last_run": st.get("last_run", ""), "ok": st.get("ok"),
+                           "error": st.get("error") or ""})
+        except (OSError, json.JSONDecodeError):
+            health["error"] = "unreadable _status.json"
+    health["missing"] = [d["date"] for d in days
+                         if d["status"] != "green" and not d["partial"] and not d["narrative"]]
+    return health
 
 
 def build(db_path: Path, notes_dir: Path | None = None) -> dict:
@@ -289,7 +341,7 @@ def build(db_path: Path, notes_dir: Path | None = None) -> dict:
         }
         day["status"], day["why"] = grade_day(day, baseline)
         day["baseline"] = {k: round(v, 1) for k, v in baseline.items()}
-        day["narrative"] = narratives.get(day["date"], "")
+        day["narrative"] = narratives.get(day["date"])
 
     # --- trim the wide dicts to top-N for embedding ---
     def top(d: dict, n: int) -> list[list]:
@@ -319,6 +371,7 @@ def build(db_path: Path, notes_dir: Path | None = None) -> dict:
         "generated": datetime.now(tz=UTC).isoformat(timespec="seconds"),
         "rubric": RUBRIC,
         "totals": totals,
+        "annotator": annotator_health(ordered, notes_dir),
         "days": ordered,
     }
 

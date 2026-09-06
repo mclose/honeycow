@@ -24,3 +24,7 @@ tools/our-ips.txt
 # Claude Code: ignore everything in .claude/ by default; opt in per-file.
 .claude/*
 !.claude/settings.json
+
+# Analysis-host secret for tools/annotate.py. NOT the honeypot .env — that one
+# has a sibling on the public VPS; an API key does not belong there.
+.env.analysis

@@ -50,7 +50,7 @@ HOST ?= 127.0.0.1
         up-prod down-prod logs-prod \
         logs-wire report-wire \
         deploy setup-remote _sandbox_check \
-        bump tag gh-release pull report report-raw ingest dashboard refresh install-timer clean
+        bump tag gh-release pull report report-raw ingest annotate dashboard refresh install-timer clean
 
 help:  ## List targets
 	@awk 'BEGIN{FS=":.*##"; printf "HoneyCow v$(VERSION) — targets:\n"} \
@@ -63,10 +63,11 @@ venv:  ## Create ./venv and install deps
 	python3 -m venv venv
 	$(PIP) install --upgrade pip
 	$(PIP) install -r requirements.txt
+	$(PIP) install -r requirements-analysis.txt
 	$(PIP) install pytest ruff pip-tools
 
 install:  ## (Re)install deps into existing venv
-	$(PIP) install -r requirements.txt
+	$(PIP) install -r requirements.txt -r requirements-analysis.txt
 
 hooks:  ## Install pre-commit hooks
 	venv/bin/pre-commit install
@@ -254,6 +255,13 @@ ingest:  ## Ingest ALL of $(EVENTS)+$(UFW) into SQLite $(DB) (DRY_RUN=1 preview,
 # the web server live on the same host, so there is no copy step.
 DASH_DIR   ?= $(HOME)/www/honeycow-dash
 DASH_NOTES ?= $(ANALYSIS_DIR)/notes
+
+# Retrospective interpretation of settled non-green days. Runs BEFORE dashboard
+# so the render picks the new notes up; never feeds a grade.
+annotate:  ## Write model notes for settled yellow/red days (DRY_RUN=1, DAY=, FORCE=1)
+	@$(PY) tools/annotate.py --db $(DB) --notes $(DASH_NOTES) \
+		$(if $(DRY_RUN),--dry-run) $(if $(DAY),--day $(DAY)) $(if $(FORCE),--force)
+
 dashboard:  ## Render the daily-watch dashboard to $(DASH_DIR)/index.html
 	@mkdir -p $(DASH_DIR)
 	@tools/dashboard.py --db $(DB) --out $(DASH_DIR)/index.html \

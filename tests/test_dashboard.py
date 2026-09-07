@@ -279,3 +279,59 @@ def test_reflection_burst_reports_rate_and_bytes(tmp_path):
     why = " ".join(hot["why"])
     assert "100 answered TXT queries" in why
     assert "/s" in why and "KB emitted" in why
+
+
+
+def test_volume_grade_uses_the_day_minus_its_loudest_source(tmp_path):
+    """The adjusted figure must stay on the same scale as the raw one, so it is
+    a subtraction from the total rather than a re-sum of external sources."""
+    data = dash.build(_db(tmp_path, _quiet(6)))
+    for d in data["days"]:
+        top = d["http_top"]
+        assert d["http_ex_top"] == max(d["http"] - (top[1] if top else 0), 0)
+
+
+def test_single_source_line_is_reported_but_never_graded(tmp_path):
+    """The burst still gets a line on the card; it must not drive colour."""
+    baseline = {"http": 400, "dns": 3000}
+    day = {"http": 100_000, "dns_queries": 3000, "dns_drops": 0,
+           "http_ex_top": 100, "dns_ex_top": 3000,
+           "http_top": ["9.9.9.9", 99_900], "dns_top": None,
+           "exploit": 0, "cve_trigger": 0, "qr_oversized_nonresearch": 0,
+           "reflection_bursts": [], "new_sources": 0,
+           "baseline": {"new_sources": 1}}
+    base = {"http": 400.0, "dns": 3000.0, "exploit": 1, "new_sources": 1}
+    status, why = dash.grade_day(day, base)
+    assert status == "green", f"a single-source flood must not colour the day: {why}"
+    assert any("one source" in w for w in why), "but it must still be reported"
+    assert any("99,900" in w for w in why)
+
+
+def test_a_genuine_breadth_spike_still_grades(tmp_path):
+    """The rule must keep its teeth: many sources spiking is the real signal."""
+    day = {"http": 5000, "dns_queries": 3000, "dns_drops": 0,
+           "http_ex_top": 4800, "dns_ex_top": 3000,
+           "http_top": ["9.9.9.9", 200], "dns_top": None,
+           "exploit": 0, "cve_trigger": 0, "qr_oversized_nonresearch": 0,
+           "reflection_bursts": [], "new_sources": 0,
+           "baseline": {"new_sources": 1}}
+    base = {"http": 400.0, "dns": 3000.0, "exploit": 1, "new_sources": 1}
+    status, why = dash.grade_day(day, base)
+    assert status == "red", f"broad spike should still be red: {why}"
+    assert any("excluding the busiest source" in w for w in why)
+
+
+def test_graded_reasons_lead_the_card(tmp_path):
+    """The ungraded burst note must not appear above the reason for the colour,
+    or the card reads as though the burst caused it."""
+    day = {"http": 10_000, "dns_queries": 3000, "dns_drops": 0,
+           "http_ex_top": 100, "dns_ex_top": 3000,
+           "http_top": ["9.9.9.9", 9900], "dns_top": None,
+           "exploit": 0, "cve_trigger": 7, "qr_oversized_nonresearch": 0,
+           "reflection_bursts": [], "new_sources": 0,
+           "baseline": {"new_sources": 1}}
+    base = {"http": 400.0, "dns": 3000.0, "exploit": 1, "new_sources": 1}
+    status, why = dash.grade_day(day, base)
+    assert status == "yellow"
+    assert "CVE" in why[0], f"graded reason must lead, got: {why}"
+    assert "one source" in why[-1]

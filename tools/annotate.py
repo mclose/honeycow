@@ -133,6 +133,14 @@ def gather_evidence(conn: sqlite3.Connection, day: dict, prior: list[dict]) -> d
             "note": ("only the families listed above count toward the exploit "
                      "rule; env-harvest and other probe families do not"),
             "cve_trigger_queries_counted": day["cve_trigger"],
+            # Volume rules grade the day MINUS its single loudest source, and
+            # the baseline is computed the same way. Do not compare the raw
+            # totals against the baseline — that is the comparison the rule
+            # deliberately stopped making.
+            "http_excluding_busiest_source": day["http_ex_top"],
+            "dns_excluding_busiest_source": day["dns_ex_top"],
+            "busiest_http_source": day["http_top"],
+            "busiest_dns_source": day["dns_top"],
             "qr_oversized_nonresearch": day["qr_oversized_nonresearch"],
             "thresholds": RUBRIC,
         },
@@ -299,19 +307,74 @@ def _api_key(repo_root: Path) -> str | None:
     return None
 
 
+def _frontmatter_field(path: Path, field: str) -> str | None:
+    """One scalar from a note's frontmatter, or None."""
+    if not path.is_file():
+        return None
+    for line in path.read_text(errors="replace").splitlines()[:8]:
+        k, _, v = line.partition(":")
+        if k.strip() == field:
+            return v.strip()
+    return None
+
+
+def _note_status(path: Path) -> str | None:
+    return _frontmatter_field(path, "status")
+
+
+def _is_model_note(path: Path) -> bool:
+    return _frontmatter_field(path, "source") == "model"
+
+
 def select_days(data: dict, notes_dir: Path, force: bool, only: str | None) -> list[dict]:
-    """Settled, non-green, not already written. Retrospective by construction:
-    `partial` excludes today, so the earliest candidate is yesterday."""
+    """Settled, non-green, and either unwritten or written against a stale verdict.
+
+    Retrospective by construction: `partial` excludes today, so the earliest
+    candidate is yesterday.
+
+    The stale-verdict case exists because the rubric is explicitly expected to
+    be tweaked. When a threshold moves, a day can go red -> yellow and its note
+    still opens "the red is...". The note records the status it was written
+    against, so a mismatch means regenerate. Without this, every rubric change
+    would leave a trail of confidently wrong prose that only a human sweep
+    could find.
+    """
     out = []
     for day in data["days"]:
         if only and day["date"] != only:
             continue
         if day["partial"] or day["status"] == "green":
             continue
-        if not force and (notes_dir / f"{day['date']}.md").exists():
-            continue
+        note = notes_dir / f"{day['date']}.md"
+        if not force and note.exists():
+            # A hand-written note is never regenerated — a person chose those
+            # words, and a threshold moving is not a reason to overwrite them.
+            # Only a model note whose recorded verdict has gone stale is redone.
+            if not _is_model_note(note) or _note_status(note) == day["status"]:
+                continue
         out.append(day)
     return out
+
+
+def prune_stale_notes(data: dict, notes_dir: Path, dry_run: bool) -> list[str]:
+    """Drop MODEL-written notes for days that are no longer non-green.
+
+    A rubric change can regrade a day to green, stranding a note that argues
+    about a red that no longer exists. Hand-written notes are never touched:
+    a human wrote that on purpose, and the day being quiet now is not a reason
+    to throw their reasoning away.
+    """
+    if not notes_dir.is_dir():
+        return []
+    keep = {d["date"] for d in data["days"] if d["status"] != "green" and not d["partial"]}
+    dropped = []
+    for note in sorted(notes_dir.glob("*.md")):
+        if note.stem in keep or not _is_model_note(note):
+            continue
+        dropped.append(note.stem)
+        if not dry_run:
+            note.unlink()
+    return dropped
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -334,6 +397,11 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     data = build(args.db)
+    pruned = prune_stale_notes(data, args.notes, args.dry_run)
+    if pruned:
+        print(f"{'[dry-run] would prune' if args.dry_run else 'pruned'} "
+              f"{len(pruned)} note(s) for days that regraded green: "
+              f"{', '.join(pruned)}", file=sys.stderr)
     candidates = select_days(data, args.notes, args.force, args.day)
     over_cap = max(0, len(candidates) - args.max_days)
     candidates = candidates[-args.max_days:] if args.max_days > 0 else candidates

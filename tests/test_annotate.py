@@ -33,6 +33,7 @@ def test_only_settled_non_green_days_are_selected(tmp_path):
 
 
 def test_a_day_that_already_has_a_note_is_left_alone(tmp_path):
+    """A hand-written note (no frontmatter) is never touched, at any verdict."""
     notes = tmp_path / "notes"
     notes.mkdir()
     (notes / "2026-03-02.md").write_text("already written")
@@ -225,3 +226,60 @@ def test_user_agents_are_ranked_within_each_talker(tmp_path):
     for row in ev["talker_ua_diversity"]:
         assert row["distinct_user_agents"] >= 1
         assert row["requests"] >= row["distinct_user_agents"]
+
+
+def test_a_note_written_against_a_stale_verdict_is_regenerated(tmp_path):
+    """The rubric is expected to be tweaked. When a day goes red -> yellow, its
+    note still opens "the red is..." — that must not survive silently."""
+    db = _graded(tmp_path)
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    data = dash.build(db)
+    day = next(d for d in data["days"] if d["status"] != "green" and not d["partial"])
+    (notes / f"{day['date']}.md").write_text(
+        ann.render_note("The red is one burst.", "claude-opus-5", "red"))
+    picked = [d["date"] for d in ann.select_days(data, notes, False, None)]
+    if day["status"] != "red":
+        assert day["date"] in picked, "stale verdict must be regenerated"
+    # A note matching the current verdict is left alone.
+    (notes / f"{day['date']}.md").write_text(
+        ann.render_note("Current.", "claude-opus-5", day["status"]))
+    assert ann.select_days(data, notes, False, None) == []
+
+
+def test_regrading_to_green_prunes_the_model_note(tmp_path):
+    db = _graded(tmp_path)
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    data = dash.build(db)
+    green = next(d for d in data["days"] if d["status"] == "green" and not d["partial"])
+    stale = notes / f"{green['date']}.md"
+    stale.write_text(ann.render_note("The red is one burst.", "claude-opus-5", "red"))
+    assert ann.prune_stale_notes(data, notes, dry_run=False) == [green["date"]]
+    assert not stale.exists()
+
+
+def test_pruning_never_deletes_a_hand_written_note(tmp_path):
+    """A person wrote that on purpose. The day being quiet now is not a reason
+    to throw their reasoning away."""
+    db = _graded(tmp_path)
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    data = dash.build(db)
+    green = next(d for d in data["days"] if d["status"] == "green" and not d["partial"])
+    human = notes / f"{green['date']}.md"
+    human.write_text("I checked this by hand; the burst was our own scanner.")
+    assert ann.prune_stale_notes(data, notes, dry_run=False) == []
+    assert human.exists()
+
+
+def test_prune_dry_run_deletes_nothing(tmp_path):
+    db = _graded(tmp_path)
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    data = dash.build(db)
+    green = next(d for d in data["days"] if d["status"] == "green" and not d["partial"])
+    stale = notes / f"{green['date']}.md"
+    stale.write_text(ann.render_note("stale", "claude-opus-5", "red"))
+    assert ann.prune_stale_notes(data, notes, dry_run=True) == [green["date"]]
+    assert stale.exists()

@@ -43,10 +43,23 @@ RUBRIC = {
     # Trailing window used for the "normal" baseline each day is compared to.
     "trailing_days": 28,
     # Relative volume spikes, as a multiple of the trailing median.
+    #
+    # Measured on BREADTH-ADJUSTED volume: the single largest source of the day
+    # is excluded, and the trailing baseline is computed the same way. Eight of
+    # the first thirteen non-green days were one scanner having a busy afternoon
+    # against a low baseline — arithmetically true, and uninformative. What the
+    # colour should mean is "more of the internet than usual found us", which is
+    # what survives dropping the loudest talker.
+    #
+    # The burst is not discarded, only demoted: a day dominated by one source
+    # still gets a line in `why` naming it (see `single_source_report`), it just
+    # no longer drives colour. Same treatment as a REFUSED reflection burst.
     "http_spike_yellow": 3.0,
     "http_spike_red": 10.0,
     "dns_spike_yellow": 2.0,
     "dns_spike_red": 4.0,
+    # Report (never grade) when one source is at least this share of the day.
+    "single_source_report": 0.5,
     # Exploit-shaped HTTP probing is sadly routine background, so this is a
     # spike test too — not an absolute count.
     "exploit_spike_yellow": 3.0,
@@ -95,21 +108,25 @@ def grade_day(day: dict, baseline: dict) -> tuple[str, list[str]]:
     def ratio(n: int, base: float) -> float:
         return (n / base) if base > 0 else 0.0
 
-    r = ratio(day["http"], baseline["http"])
+    r = ratio(day["http_ex_top"], baseline["http"])
     if r >= RUBRIC["http_spike_red"]:
         status = _worst(status, "red")
-        why.append(f"HTTP volume {r:.1f}x the 28-day median ({day['http']:,} vs {baseline['http']:,.0f})")
     elif r >= RUBRIC["http_spike_yellow"]:
         status = _worst(status, "yellow")
-        why.append(f"HTTP volume {r:.1f}x the 28-day median ({day['http']:,} vs {baseline['http']:,.0f})")
+    if r >= RUBRIC["http_spike_yellow"]:
+        why.append(f"HTTP volume {r:.1f}x the 28-day median, excluding the busiest "
+                   f"source ({day['http_ex_top']:,} vs {baseline['http']:,.0f}; "
+                   f"{day['http']:,} including it)")
 
-    r = ratio(day["dns_queries"], baseline["dns"])
+    r = ratio(day["dns_ex_top"], baseline["dns"])
     if r >= RUBRIC["dns_spike_red"]:
         status = _worst(status, "red")
-        why.append(f"DNS volume {r:.1f}x the 28-day median ({day['dns_queries']:,})")
     elif r >= RUBRIC["dns_spike_yellow"]:
         status = _worst(status, "yellow")
-        why.append(f"DNS volume {r:.1f}x the 28-day median ({day['dns_queries']:,})")
+    if r >= RUBRIC["dns_spike_yellow"]:
+        why.append(f"DNS volume {r:.1f}x the 28-day median, excluding the busiest "
+                   f"source ({day['dns_ex_top']:,} vs {baseline['dns']:,.0f}; "
+                   f"{day['dns_queries']:,} including it)")
 
     r = ratio(day["exploit"], baseline["exploit"])
     if day["exploit"] and r >= RUBRIC["exploit_spike_yellow"]:
@@ -151,6 +168,16 @@ def grade_day(day: dict, baseline: dict) -> tuple[str, list[str]]:
     if day["new_sources"] and r >= RUBRIC["new_source_spike_yellow"]:
         status = _worst(status, "yellow")
         why.append(f"{day['new_sources']} never-before-seen source IPs ({r:.1f}x baseline)")
+
+    # Reported, never graded, and appended LAST so the reasons that actually
+    # earned the colour lead the card. One host flooding us is worth seeing —
+    # it is just not evidence that anything changed about who is finding us.
+    for proto, total, top in (("HTTP", day["http"], day["http_top"]),
+                              ("DNS", day["dns_queries"], day["dns_top"])):
+        if top and total and top[1] / total >= RUBRIC["single_source_report"]:
+            why.append(f"{top[1]:,} of {total:,} {proto} requests ({top[1] / total:.0%}) "
+                       f"came from one source, {top[0]} — burst, not breadth; "
+                       f"excluded from the volume grade")
 
     if not why:
         why.append("all volumes within band; probes absorbed by the exemption lists")
@@ -243,6 +270,10 @@ def build(db_path: Path, notes_dir: Path | None = None) -> dict:
             "qr_oversized_nonresearch": 0, "new_sources": 0,
             "reflection_bursts": [],
             "families": {}, "http_families": {}, "sources": {},
+            # Per-protocol, because `sources` merges DNS and HTTP and so cannot
+            # answer "who was the busiest HTTP talker". Trimmed away before the
+            # day is embedded in the page.
+            "dns_sources": {}, "http_sources": {},
             "http_paths": {}, "user_agents": {},
         })
 
@@ -257,6 +288,7 @@ def build(db_path: Path, notes_dir: Path | None = None) -> dict:
             if not is_private_or_loopback(ip):
                 s["dns_external"] += 1
                 s["sources"][ip] = s["sources"].get(ip, 0) + 1
+                s["dns_sources"][ip] = s["dns_sources"].get(ip, 0) + 1
                 fam = r["family"] or "other"
                 s["families"][fam] = s["families"].get(fam, 0) + 1
                 if fam == "cve-2026-5946-trigger":
@@ -298,6 +330,7 @@ def build(db_path: Path, notes_dir: Path | None = None) -> dict:
         ip = r["client_ip"] or r["src_ip"] or ""
         if ip and not is_private_or_loopback(ip):
             s["sources"][ip] = s["sources"].get(ip, 0) + 1
+            s["http_sources"][ip] = s["http_sources"].get(ip, 0) + 1
         fam = r["family"] or "other"
         s["http_families"][fam] = s["http_families"].get(fam, 0) + 1
         if fam in EXPLOIT_FAMILIES:
@@ -322,6 +355,18 @@ def build(db_path: Path, notes_dir: Path | None = None) -> dict:
     for day in ordered:
         day["partial"] = day["date"] >= today
 
+    # --- breadth-adjusted volumes: the day minus its single loudest source ---
+    # `http` counts every request including internal/loopback ones, while
+    # `http_sources` only holds external IPs, so subtract rather than re-sum —
+    # that keeps the adjusted figure on the same scale as the raw one.
+    for day in ordered:
+        for proto, total_key, src_key in (("http", "http", "http_sources"),
+                                          ("dns", "dns_queries", "dns_sources")):
+            srcs = day[src_key]
+            top = max(srcs.items(), key=lambda kv: kv[1]) if srcs else None
+            day[f"{proto}_top"] = list(top) if top else None
+            day[f"{proto}_ex_top"] = max(day[total_key] - (top[1] if top else 0), 0)
+
     # --- first-seen sources (drives the "new campaign found us" signal) ---
     seen: set[str] = set()
     for day in ordered:
@@ -334,8 +379,10 @@ def build(db_path: Path, notes_dir: Path | None = None) -> dict:
     for i, day in enumerate(ordered):
         prior = [p for p in ordered[max(0, i - win):i] if not p["partial"]] or [day]
         baseline = {
-            "http": statistics.median([p["http"] for p in prior]),
-            "dns": statistics.median([p["dns_queries"] for p in prior]),
+            # Same measure on both sides: an adjusted day judged against an
+            # unadjusted history would just bias the other way.
+            "http": statistics.median([p["http_ex_top"] for p in prior]),
+            "dns": statistics.median([p["dns_ex_top"] for p in prior]),
             "exploit": max(statistics.median([p["exploit"] for p in prior]), 1),
             "new_sources": max(statistics.median([p["new_sources"] for p in prior]), 1),
         }
@@ -348,6 +395,7 @@ def build(db_path: Path, notes_dir: Path | None = None) -> dict:
         return [[k, v] for k, v in sorted(d.items(), key=lambda kv: -kv[1])[:n]]
 
     for day in ordered:
+        del day["dns_sources"], day["http_sources"]  # working state, not page data
         day["sources"] = top(day["sources"], 10)
         day["families"] = top(day["families"], 8)
         day["http_families"] = top(day["http_families"], 8)

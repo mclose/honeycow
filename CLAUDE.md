@@ -145,6 +145,14 @@ cert via DNS-01 over BIND nsupdate). All three are required.
   CIDR, catching scanners that fingerprint via off-zone names — the qname
   list alone misses `TXT google.com` / `TXT version.bind` probes from
   known scanner ranges.
+- **`requirements.txt` builds the honeypot image; `requirements-analysis.txt`
+  does not.** `requirements.txt` is pip-compiled into `requirements.lock`,
+  which the Dockerfile installs — so anything added there ships to the VPS and
+  bloats a container that is deliberately minimal, read-only and offline. The
+  report-host tools (`annotate.py` needs the `anthropic` SDK) go in
+  `requirements-analysis.txt`, which only `make venv` / `make install` read.
+  Never let an analysis dependency reach the lock file.
+
 ## Architecture (file map)
 
 - `honey_ns.py` — asyncio UDP + TCP DNS listeners, wire parsing,
@@ -171,7 +179,15 @@ cert via DNS-01 over BIND nsupdate). All three are required.
 - `static/index.html` — the HTTP closer page.
 - `caddy/Caddyfile` — TLS + reverse-proxy config (prod stack only).
 - `tools/healthcheck.py` — container healthcheck (SOA query against self).
-- `tools/morning_report.py` — daily traffic summary. Three input modes:
+- `tools/morning_report.py` — daily traffic summary. Also announces new CVE
+  signatures: `ruminate`'s weekly scan auto-promotes drafted signatures into
+  `taxonomy/` and appends them to `state/promotions.jsonl`, which the report
+  reads (`--promotions`, best-effort — a missing or malformed file must never
+  cost you the report). Promotion is automatic because the manual review gate
+  stalled: 44 drafts, 1 promotion, May→Sep 2026. The real gate belongs at
+  *consumption* — when the signature matcher lands and taxonomy entries start
+  driving day colour, it must match only entries marked confirmed. Three input
+  modes:
   `--events` (raw JSONL), `--db` (the SQLite index, the default for
   `make report`), `--herd` (merged per-site digests). See [[morning-report]]
   feedback in agent memory.
@@ -182,18 +198,26 @@ cert via DNS-01 over BIND nsupdate). All three are required.
   per-row `rowhash`, so re-ingesting overlapping data never double-counts.
 - `tools/dashboard.py` + `dashboard_template.html` — renders the daily-watch
   page. The grading rubric is one config block at the top of the script.
-- `tools/refresh-index.sh` — pull + ingest + render, under a lockfile. What
-  the systemd timer runs (`deploy/systemd/`).
+- `tools/annotate.py` — retrospective analyst note for every settled non-green
+  day, via the Anthropic API (Opus by default). Idempotent (skips days that
+  already have a note), capped with `--max-days` so a rebuild can't fan out,
+  and `--dry-run` costs nothing. Key comes from `ANTHROPIC_API_KEY` or the
+  gitignored `.env.analysis` — deliberately NOT the honeypot's `.env`, whose
+  sibling lives on the public VPS.
+- `tools/refresh-index.sh` — pull + ingest + annotate + render, under a
+  lockfile. What the systemd timer runs (`deploy/systemd/`). The annotate step
+  is non-fatal: a failed API call must still leave a rendered dashboard.
 
 ## Analysis pipeline (runs on claude, NOT the honeypot)
 
 The raw logs live on the honeycow VPS; analysis runs on the report host and
-pulls them down. `make refresh` = `pull` → `ingest` → `dashboard`, fired
-4-hourly by a systemd **user** timer anchored to America/Chicago.
+pulls them down. `make refresh` = `pull` → `ingest` → `annotate` → `dashboard`,
+fired 4-hourly by a systemd **user** timer anchored to America/Chicago.
 
     make pull       # incremental: only the new delta crosses the wire
     make ingest     # (re)build ~/honeycow-analysis/honeycow.db
     make report     # fast report from the index (report-raw reads raw files)
+    make annotate   # model notes for settled yellow/red days (DRY_RUN=1 first)
     make dashboard  # render to ~/www/honeycow-dash, served by caddy-claude
                     # at honeycow.lab.deflationhollow.net (tailnet-only)
 
@@ -205,8 +229,21 @@ Rules that matter here:
 - **The data dir is persistent** (`~/honeycow-analysis`, never `/tmp`). The
   DB accumulates, so its UFW history outlives the VPS's ~5-week rotation.
 - **The dashboard detects; it does not interpret.** Counts and grades are
-  computed and never inferred. Narrative goes in a separate per-day slot
-  (`--notes`), written on demand — not auto-generated.
+  computed and never inferred. Interpretation lives in a separate per-day slot
+  (`--notes`) that **never feeds a grade**. `tools/annotate.py` fills that slot
+  automatically for settled yellow/red days via the Anthropic API, and every
+  such note is stamped with the model that wrote it and rendered with a
+  "written by <model>, not a measurement" byline. A note may be wrong; a count
+  may not. Keep that boundary — the moment a narrative can move a colour, the
+  calendar stops being evidence.
+- **Nothing in the analysis pipeline may depend on being remembered.** The
+  operator will not look at this for weeks at a time, so there is no queue to
+  drain and no gate to pass: notes are written and published automatically.
+  The corollary is that failures must be visible *on the page*, not in a
+  journal. `annotator_health()` reports both what the annotator said about its
+  last run (`notes/_status.json`) and — independently — how many graded days
+  have no interpretation, computed from the data so it stays true even when
+  the annotator is completely dead.
 - **Colour grades deviation, the detail panel shows everything.** A routine
   signal must not drive colour, or the calendar trains you to ignore it.
 

@@ -129,8 +129,48 @@ def test_narrative_slot_is_filled_from_notes_dir(tmp_path):
     (notes / "2026-03-02.md").write_text("A dropper wordlist, not a real actor.")
     by = {d["date"]: d for d in
           dash.build(_db(tmp_path, _quiet(3)), notes)["days"]}
-    assert by["2026-03-02"]["narrative"].startswith("A dropper wordlist")
-    assert by["2026-03-01"]["narrative"] == ""
+    assert by["2026-03-02"]["narrative"]["text"].startswith("A dropper wordlist")
+    assert by["2026-03-01"]["narrative"] is None
+
+
+def test_bare_note_is_attributed_to_a_human(tmp_path):
+    """A note with no frontmatter predates the annotator — a person wrote it.
+    Getting this backwards would label hand-written analysis as machine output."""
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    (notes / "2026-03-02.md").write_text("Checked by hand.")
+    by = {d["date"]: d for d in dash.build(_db(tmp_path, _quiet(3)), notes)["days"]}
+    assert by["2026-03-02"]["narrative"]["source"] == "human"
+    assert by["2026-03-02"]["narrative"]["model"] == ""
+
+
+def test_model_note_carries_its_provenance(tmp_path):
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    (notes / "2026-03-02.md").write_text(
+        "---\nsource: model\nmodel: claude-opus-5\n"
+        "generated: 2026-03-03T00:00:00+00:00\nstatus: yellow\n---\n"
+        "A measurement study, not recon.\n")
+    by = {d["date"]: d for d in dash.build(_db(tmp_path, _quiet(3)), notes)["days"]}
+    n = by["2026-03-02"]["narrative"]
+    assert n["source"] == "model"
+    assert n["model"] == "claude-opus-5"
+    assert n["generated"].startswith("2026-03-03")
+    # The frontmatter must not bleed into the rendered prose.
+    assert n["text"] == "A measurement study, not recon."
+    assert "source:" not in n["text"]
+
+
+def test_missing_notes_are_reported_even_when_annotator_never_ran(tmp_path):
+    """The health signal must not depend on the annotator writing anything —
+    a dead annotator is exactly the case the operator needs to see."""
+    days = _quiet(3)
+    days["2026-03-02"] = {"dns": 9, "http": 4000}  # loud enough to grade non-green
+    data = dash.build(_db(tmp_path, days), tmp_path / "notes")
+    graded = {d["date"] for d in data["days"] if d["status"] != "green" and not d["partial"]}
+    assert graded, "fixture must produce at least one non-green settled day"
+    assert set(data["annotator"]["missing"]) == graded
+    assert data["annotator"]["last_run"] == ""
 
 
 def test_render_is_self_contained_and_embeds_data(tmp_path):

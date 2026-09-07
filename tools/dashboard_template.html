@@ -162,6 +162,14 @@ header .sub{color:var(--ink-2); font-size:0.88rem; margin-top:4px}
   background:var(--surface-2); border-left:3px solid var(--brand); border-radius:0 var(--r) var(--r) 0;
   padding:14px 16px; font-size:0.96rem; color:var(--ink-2); white-space:pre-wrap;
 }
+.narrative .byline{
+  margin-top:10px; font-family:var(--mono); font-size:0.72rem; letter-spacing:0.04em;
+  text-transform:uppercase; color:var(--ink-3); white-space:normal;
+}
+.health{
+  margin-top:6px; font-family:var(--mono); font-size:0.72rem; letter-spacing:0.03em;
+}
+.health.warn{color:var(--warn)}
 .grid2{display:grid; grid-template-columns:1fr 1fr; gap:18px}
 @media (max-width:720px){.grid2{grid-template-columns:1fr}}
 table{border-collapse:collapse; width:100%; font-size:0.88rem}
@@ -258,6 +266,10 @@ const GLYPH = new Proxy({}, { get: (_, s) => statusGlyph(s, 10) });
 const fmt = n => n === null || n === undefined ? "—" : n.toLocaleString();
 const el = (t, c, h) => { const e = document.createElement(t); if(c) e.className = c;
   if(h !== undefined) e.innerHTML = h; return e; };
+/* Everything rendered through el() goes in as innerHTML, and some of it now
+   comes from note frontmatter and log-derived strings. Escape those. */
+const esc = (s) => String(s == null ? "" : s)
+  .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 
 /* ---- theme toggle: must beat the media query in BOTH directions ---- */
 const root = document.documentElement;
@@ -398,8 +410,18 @@ function drawDetail(){
   h.appendChild(el("span","eyebrow", d.partial ? "still accumulating" : "complete day"));
   p.appendChild(h);
 
-  if(d.narrative){
-    p.appendChild(el("div","narrative", d.narrative.replace(/</g,"&lt;")));
+  if(d.narrative && d.narrative.text){
+    const n = el("div","narrative");
+    n.appendChild(el("div","", d.narrative.text.replace(/</g,"&lt;")));
+    // Provenance is not decoration: a reader must never mistake an inferred
+    // narrative for a counted fact. Model notes say so, on every card.
+    const by = d.narrative.source === "model"
+      ? `interpretation — written by ${esc(d.narrative.model || "a model")}` +
+        (d.narrative.generated ? ` on ${esc(d.narrative.generated.slice(0,10))}` : "") +
+        `, not a measurement`
+      : "interpretation — written by hand, not a measurement";
+    n.appendChild(el("div","byline", by));
+    p.appendChild(n);
   }
 
   p.appendChild(el("div","eyebrow","why this grade"));
@@ -542,6 +564,22 @@ drawRubric();
 render();
 document.getElementById("foot").innerHTML =
   `generated ${DATA.generated} · ${T.green} routine / ${T.yellow} worth a look / ${T.red} something real<br>` +
-  `deterministic: counts and grades are computed, never inferred. narrative panels are written separately.`;
+  `deterministic: counts and grades are computed, never inferred. narrative panels are written separately.` +
+  annotatorLine();
+
+/* The note pipeline has to report its own health HERE, on the page, because
+   nobody reads the timer's journal. `missing` is computed from the graded days
+   rather than trusted from the annotator's status file, so it stays honest
+   even when the annotator has not run at all. */
+function annotatorLine(){
+  const a = DATA.annotator; if(!a) return "";
+  const miss = a.missing || [];
+  if(a.error) return `<div class="health warn">day notes: FAILING — ${esc(a.error)}</div>`;
+  if(miss.length) return `<div class="health warn">day notes: ${miss.length} graded ` +
+    `day${miss.length === 1 ? "" : "s"} with no interpretation (${esc(miss.slice(-3).join(", "))}` +
+    `${miss.length > 3 ? ", …" : ""})</div>`;
+  if(a.last_run) return `<div class="health">day notes: current, last run ${esc(a.last_run)}</div>`;
+  return "";
+}
 addEventListener("resize", drawCharts);
 </script>

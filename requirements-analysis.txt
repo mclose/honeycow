@@ -1,0 +1,4 @@
+# Analysis-host deps (report host only — NEVER pip-compiled into requirements.lock,
+# which builds the honeypot image). tools/annotate.py needs the Anthropic SDK;
+# the container must stay minimal and offline.
+anthropic>=0.69

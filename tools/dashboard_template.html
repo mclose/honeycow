@@ -162,6 +162,7 @@ header .sub{color:var(--ink-2); font-size:0.88rem; margin-top:4px}
   background:var(--surface-2); border-left:3px solid var(--brand); border-radius:0 var(--r) var(--r) 0;
   padding:14px 16px; font-size:0.96rem; color:var(--ink-2); white-space:pre-wrap;
 }
+.narrative .byline.stale{color:var(--warn)}
 .narrative .byline{
   margin-top:10px; font-family:var(--mono); font-size:0.72rem; letter-spacing:0.04em;
   text-transform:uppercase; color:var(--ink-3); white-space:normal;
@@ -421,6 +422,13 @@ function drawDetail(){
         `, not a measurement`
       : "interpretation — written by hand, not a measurement";
     n.appendChild(el("div","byline", by));
+    // The rubric was tweaked after this note was written and the day regraded.
+    // Say so rather than letting the note argue about a colour it no longer has.
+    if(d.narrative.stale){
+      n.appendChild(el("div","byline stale",
+        `stale — written when this day graded ${esc(d.narrative.graded_status)}; ` +
+        `it now grades ${esc(d.status)} under the current rubric`));
+    }
     p.appendChild(n);
   }
 
@@ -537,12 +545,14 @@ function drawRubric(){
   document.getElementById("rubric").innerHTML = `
     A day is graded against the median of its previous ${R.trailing_days} complete days —
     relative, not absolute, because one flood would poison a mean/σ band and hide
-    everything after it. Colour grades <em>deviation</em>; the panel above always shows the
-    full counts.
+    everything after it. Volume rules drop the day's busiest source, and exploit probes
+    are collapsed by path-script so clones of one commodity scanner count once — both
+    measure breadth rather than one talker's busy afternoon. Colour grades
+    <em>deviation</em>; the panel above always shows the full counts.
     <div class="scroll" style="margin-top:12px"><table>
     <thead><tr><th>grade</th><th style="text-align:left">fires when</th></tr></thead><tbody>
     <tr><td><span class="chip s-yellow"><span class="g">${statusGlyph("yellow",9)}</span>look</span></td>
-        <td style="text-align:left">HTTP ≥${R.http_spike_yellow}× median · DNS ≥${R.dns_spike_yellow}× · exploit-shaped HTTP ≥${R.exploit_spike_yellow}× · new source IPs ≥${R.new_source_spike_yellow}× · ≥${R.cve_trigger_yellow} CVE-trigger shapes</td></tr>
+        <td style="text-align:left">HTTP ≥${R.http_spike_yellow}× median · DNS ≥${R.dns_spike_yellow}× · deduplicated exploit-shaped HTTP ≥${R.exploit_spike_yellow}× · new source IPs ≥${R.new_source_spike_yellow}× · ≥${R.cve_trigger_yellow} CVE-trigger shapes</td></tr>
     <tr><td><span class="chip s-red"><span class="g">${statusGlyph("red",9)}</span>real</span></td>
         <td style="text-align:left">HTTP ≥${R.http_spike_red}× median · DNS ≥${R.dns_spike_red}× · any oversized QR=1 from a non-research source (reflection-victim shape)</td></tr>
     </tbody></table></div>`;

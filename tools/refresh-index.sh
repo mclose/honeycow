@@ -49,10 +49,12 @@ fi
 log "start  repo=$REPO_DIR data=$ANALYSIS_DIR"
 make -C "$REPO_DIR" pull   ANALYSIS_DIR="$ANALYSIS_DIR"
 make -C "$REPO_DIR" ingest ANALYSIS_DIR="$ANALYSIS_DIR"
-# Interpret the settled yellow/red days before rendering, so a new note lands
-# on the page in the same pass. Non-fatal on purpose: a failed API call must
-# still leave a rendered dashboard, and the page itself reports the gap (the
-# annotator writes _status.json; the dashboard counts un-annotated graded days).
+# Interpret the settled days before rendering, so a new note lands on the page
+# in the same pass. Scope is non-green days unless HONEYCOW_ANNOTATE_ALL=1 is
+# set in the environment (the systemd unit sets it) — inherited through make.
+# Non-fatal on purpose: a failed API call must still leave a rendered
+# dashboard, and the page itself reports the gap (the annotator writes
+# _status.json; the dashboard counts un-annotated in-scope days).
 make -C "$REPO_DIR" annotate ANALYSIS_DIR="$ANALYSIS_DIR" \
     || log "annotate failed — see $ANALYSIS_DIR/notes/_status.json"
 # Render straight into the directory caddy-claude serves. No copy step: the

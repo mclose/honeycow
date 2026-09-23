@@ -9,6 +9,7 @@ is always stubbed — the suite must stay offline.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -151,13 +152,18 @@ def test_successful_run_writes_note_and_clears_status(tmp_path, monkeypatch):
     db = _graded(tmp_path)
     notes = tmp_path / "notes"
     monkeypatch.setattr(ann, "_client", lambda key: object())
-    monkeypatch.setattr(ann, "annotate_day", lambda *a, **k: "A known scanner fleet.")
+    usage = SimpleNamespace(input_tokens=12_000, output_tokens=2_000,
+                            cache_creation_input_tokens=0, cache_read_input_tokens=0)
+    monkeypatch.setattr(ann, "annotate_day",
+                        lambda *a, **k: ("A known scanner fleet.", usage))
     assert ann.main(["--db", str(db), "--notes", str(notes)]) == 0
     note = (notes / "2026-03-02.md").read_text()
     assert "A known scanner fleet." in note
     assert "source: model" in note
     status = json.loads((notes / ann.STATUS_FILE).read_text())
     assert status["ok"] is True and status["written"] == ["2026-03-02"]
+    # 12K in + 2K out on Opus 5 = $0.06 + $0.05. A run must say what it spent.
+    assert status["estimated_usd"] == pytest.approx(0.11, abs=0.005)
     # And the dashboard now reports a clean bill of health.
     assert dash.build(db, notes)["annotator"]["missing"] == []
 
@@ -207,6 +213,11 @@ def test_bundle_hands_over_the_rubrics_own_inputs(tmp_path):
     conn.close()
     ri = ev["rubric_inputs"]
     assert ri["exploit_probes_counted"] == day["exploit"]
+    # Both the graded (deduplicated) and the raw count must travel: a note that
+    # compares the raw total against the baseline re-derives a ratio the rule
+    # deliberately stopped computing.
+    assert ri["exploit_probes_raw"] == day["exploit_raw"]
+    assert ri["exploit_distinct_path_scripts"] == day["exploit_kits"]
     assert ri["cve_trigger_queries_counted"] == day["cve_trigger"]
     assert set(ri["exploit_families_counted"]) == set(dash.EXPLOIT_FAMILIES)
     assert "env-harvest" not in ri["exploit_families_counted"]
@@ -283,3 +294,95 @@ def test_prune_dry_run_deletes_nothing(tmp_path):
     stale.write_text(ann.render_note("stale", "claude-opus-5", "red"))
     assert ann.prune_stale_notes(data, notes, dry_run=True) == [green["date"]]
     assert stale.exists()
+
+
+# --- scope and staleness --------------------------------------------------
+
+def _note(notes, date, *, status, rubric=None, source="model"):
+    notes.mkdir(parents=True, exist_ok=True)
+    fm = f"---\nsource: {source}\nmodel: m\nstatus: {status}\n"
+    if rubric:
+        fm += f"rubric: {rubric}\n"
+    (notes / f"{date}.md").write_text(fm + "---\nprose")
+
+
+def test_green_days_are_skipped_by_default_and_covered_with_all_days(tmp_path):
+    db = _graded(tmp_path)
+    data = dash.build(db)
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    default = {d["date"] for d in ann.select_days(data, notes, False, None)}
+    every = {d["date"] for d in ann.select_days(data, notes, False, None, all_days=True)}
+    assert default and default < every, "--all-days must be a superset"
+    assert all(d["status"] != "green"
+               for d in ann.select_days(data, notes, False, None))
+    # Never today: a partial day's counts are not comparable to a full one.
+    assert not any(d["partial"]
+                   for d in ann.select_days(data, notes, False, None, all_days=True))
+
+
+def test_a_note_written_against_an_old_rubric_is_regenerated(tmp_path):
+    """The quiet staleness case: the threshold moved, the colour did not, and
+    the prose keeps quoting a ratio nothing computes any more."""
+    db = _graded(tmp_path)
+    data = dash.build(db)
+    notes = tmp_path / "notes"
+    day = next(d for d in data["days"] if d["status"] != "green" and not d["partial"])
+
+    _note(notes, day["date"], status=day["status"], rubric=ann.rubric_fingerprint())
+    assert day["date"] not in {d["date"] for d in ann.select_days(data, notes, False, None)}
+
+    _note(notes, day["date"], status=day["status"], rubric="deadbeef1234")
+    assert day["date"] in {d["date"] for d in ann.select_days(data, notes, False, None)}
+
+    # A note predating the stamp entirely is also stale — it was written
+    # against some rubric, just not a recorded one.
+    _note(notes, day["date"], status=day["status"])
+    assert day["date"] in {d["date"] for d in ann.select_days(data, notes, False, None)}
+
+
+def test_a_hand_written_note_is_never_regenerated_by_a_rubric_change(tmp_path):
+    db = _graded(tmp_path)
+    data = dash.build(db)
+    notes = tmp_path / "notes"
+    day = next(d for d in data["days"] if d["status"] != "green" and not d["partial"])
+    _note(notes, day["date"], status="red", rubric="deadbeef1234", source="human")
+    assert day["date"] not in {d["date"] for d in ann.select_days(data, notes, False, None)}
+
+
+def test_rubric_fingerprint_moves_only_when_the_rubric_does(monkeypatch):
+    before = ann.rubric_fingerprint()
+    assert before == ann.rubric_fingerprint(), "must be deterministic"
+    monkeypatch.setitem(dash.RUBRIC, "exploit_spike_yellow", 99.0)
+    assert ann.rubric_fingerprint() != before
+
+
+def test_all_days_mode_does_not_prune_the_green_notes_it_just_wrote(tmp_path):
+    """Pruning green notes under --all-days would delete every note the last
+    run paid for, then rewrite them — an infinite meter with no new signal."""
+    db = _graded(tmp_path)
+    data = dash.build(db)
+    notes = tmp_path / "notes"
+    green = next(d for d in data["days"] if d["status"] == "green" and not d["partial"])
+    _note(notes, green["date"], status="green", rubric=ann.rubric_fingerprint())
+    assert ann.prune_stale_notes(data, notes, dry_run=True, all_days=True) == []
+    assert green["date"] in ann.prune_stale_notes(data, notes, dry_run=True)
+
+
+def test_health_counts_green_gaps_only_when_the_annotator_claims_them(tmp_path):
+    """The count stays computed from the data; only the SCOPE is self-reported,
+    and an absent or unreadable status file falls back to the narrow claim."""
+    db = _graded(tmp_path)
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    narrow = dash.build(db, notes)["annotator"]
+    assert all(d["status"] != "green"
+               for d in dash.build(db, notes)["days"] if d["date"] in narrow["missing"])
+
+    (notes / ann.STATUS_FILE).write_text(json.dumps({"coverage": "all", "ok": True}))
+    wide = dash.build(db, notes)["annotator"]
+    assert set(narrow["missing"]) < set(wide["missing"])
+
+    (notes / ann.STATUS_FILE).write_text("{not json")
+    broken = dash.build(db, notes)["annotator"]
+    assert broken["missing"] == narrow["missing"], "a broken file must understate, not invent"

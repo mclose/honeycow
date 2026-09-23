@@ -258,9 +258,10 @@ DASH_NOTES ?= $(ANALYSIS_DIR)/notes
 
 # Retrospective interpretation of settled non-green days. Runs BEFORE dashboard
 # so the render picks the new notes up; never feeds a grade.
-annotate:  ## Write model notes for settled yellow/red days (DRY_RUN=1, DAY=, FORCE=1)
+annotate:  ## Write model notes for settled days (DRY_RUN=1, DAY=, FORCE=1, ALL_DAYS=1, MAX_DAYS=)
 	@$(PY) tools/annotate.py --db $(DB) --notes $(DASH_NOTES) \
-		$(if $(DRY_RUN),--dry-run) $(if $(DAY),--day $(DAY)) $(if $(FORCE),--force)
+		$(if $(DRY_RUN),--dry-run) $(if $(DAY),--day $(DAY)) $(if $(FORCE),--force) \
+		$(if $(ALL_DAYS),--all-days) $(if $(MAX_DAYS),--max-days $(MAX_DAYS))
 
 dashboard:  ## Render the daily-watch dashboard to $(DASH_DIR)/index.html
 	@mkdir -p $(DASH_DIR)

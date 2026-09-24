@@ -44,6 +44,15 @@ def _db(tmp_path, rows_by_day, ufw_days=()):
                             "cam.ac.uk.", "TXT", 16, "IN", 1, "NOERROR", 1, 0, 0,
                             293, 0, None, None, None, None, "other"))
 
+        # Exploit-family probes with explicit per-source path lists, so a test
+        # can express "N sources running the same script" vs "N behaviours".
+        for k_i, kit in enumerate(spec.get("kits", [])):
+            for p_i, path in enumerate(kit["paths"]):
+                http.append((f"kit-{day}-{k_i}-{p_i}", f"{day}T12:00:00+00:00", 0,
+                             "1.2.3.4", 5000, None, kit["src_ip"], None, "GET",
+                             path, "h", "ua", 10, 10, 1.0,
+                             kit.get("family", "phpunit-rce")))
+
     for day in ufw_days:
         ufw.append((f"ufw-{day}", f"{day}T10:00:00+00:00", 0, "7.7.7.7", "1.2.3.4",
                     "TCP", 80, "BLOCK"))
@@ -335,3 +344,101 @@ def test_graded_reasons_lead_the_card(tmp_path):
     assert status == "yellow"
     assert "CVE" in why[0], f"graded reason must lead, got: {why}"
     assert "one source" in why[-1]
+
+
+# --- exploit dedup: clones of one commodity kit are one behaviour ------------
+
+def test_cluster_by_paths_merges_scripts_that_differ_by_one_nonce():
+    """Regression from live data: the 2026-09-07 twin scanners walked the same
+    637-path list but each stamped a unique `/__aws_leak_probe_<rand>__`, so
+    exact-set matching split them at Jaccard 0.997."""
+    shared = {f"/p{i}" for i in range(637)}
+    groups = dash.cluster_by_paths(
+        {"a": shared | {"/__aws_leak_probe_e1b8__"},
+         "b": shared | {"/__aws_leak_probe_5fd3__"}},
+        dash.RUBRIC["kit_similarity"],
+    )
+    assert len(groups) == 1, "one nonce path must not split one behaviour"
+    assert sorted(groups[0]) == ["a", "b"]
+
+
+def test_cluster_by_paths_keeps_unrelated_scripts_apart():
+    groups = dash.cluster_by_paths(
+        {"a": {"/x1", "/x2", "/x3"}, "b": {"/y1", "/y2", "/y3"}},
+        dash.RUBRIC["kit_similarity"],
+    )
+    assert len(groups) == 2, "disjoint path lists are two behaviours"
+
+
+def test_cluster_by_paths_does_not_chain():
+    """Single-linkage would merge a and c through b, hiding a distinct
+    behaviour inside a commodity cluster. Leader assignment must not."""
+    groups = dash.cluster_by_paths(
+        {"a": {"/1", "/2"}, "b": {"/2", "/3"}, "c": {"/3", "/4"}}, 0.3)
+    assert {"a", "c"} not in [set(g) for g in groups]
+
+
+def test_clone_scanners_do_not_multiply_the_exploit_count(tmp_path):
+    """Four copies of one 48-path kit must count once, not four times — the
+    exact arithmetic that graded 2026-07-22, 08-29 and 09-08 yellow."""
+    kit = [f"/k{i}" for i in range(48)]
+    rows = _quiet(30)
+    rows["2026-03-31"] = {"dns": 10, "http": 100, "kits": [
+        {"src_ip": f"9.9.9.{n}", "paths": kit} for n in range(4)]}
+    data = dash.build(_db(tmp_path, rows))
+    day = next(d for d in data["days"] if d["date"] == "2026-03-31")
+    assert day["exploit_raw"] == 192, "raw count still sees every probe"
+    assert day["exploit"] == 48, "four clones are one behaviour"
+    assert day["exploit_kits"] == 1
+
+
+def test_distinct_kits_still_add_up(tmp_path):
+    """The rule must keep its teeth: genuinely different scripts accumulate."""
+    rows = _quiet(30)
+    rows["2026-03-31"] = {"dns": 10, "http": 100, "kits": [
+        {"src_ip": "9.9.9.1", "paths": [f"/a{i}" for i in range(48)]},
+        {"src_ip": "9.9.9.2", "paths": [f"/b{i}" for i in range(48)]}]}
+    data = dash.build(_db(tmp_path, rows))
+    day = next(d for d in data["days"] if d["date"] == "2026-03-31")
+    assert day["exploit"] == 96 and day["exploit_kits"] == 2
+
+
+def test_the_panel_still_shows_the_raw_probe_count(tmp_path):
+    """Colour grades the deduplicated figure; the card must not hide the rest."""
+    kit = [f"/k{i}" for i in range(48)]
+    rows = _quiet(30, http=10)
+    rows["2026-03-31"] = {"dns": 10, "http": 10, "kits": [
+        {"src_ip": f"9.9.9.{n}", "paths": kit} for n in range(8)]}
+    data = dash.build(_db(tmp_path, rows))
+    day = next(d for d in data["days"] if d["date"] == "2026-03-31")
+    fired = [w for w in day["why"] if "exploit-shaped" in w]
+    assert fired, f"a real 8-clone spike should still fire: {day['why']}"
+    assert "384 raw" in fired[0], f"raw count must stay visible: {fired[0]}"
+
+
+def test_working_state_is_not_embedded_in_the_page(tmp_path):
+    """`exploit_paths` holds sets, which are not JSON-serialisable — and the
+    page has no use for per-source path lists anyway."""
+    data = dash.build(_db(tmp_path, _quiet(5)))
+    for day in data["days"]:
+        assert "exploit_paths" not in day and "exploit_sources" not in day
+    json.dumps(data)
+
+
+def test_a_note_written_against_a_different_grade_is_marked_stale(tmp_path):
+    """A rubric tweak regrades days underneath existing notes, and annotate.py
+    is idempotent so it never revisits them. The page must say so."""
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    (notes / "2026-03-05.md").write_text(
+        "---\nsource: model\nmodel: m\nstatus: yellow\n---\nIt was yellow because...")
+    (notes / "2026-03-06.md").write_text("A hand note with no frontmatter.")
+    data = dash.build(_db(tmp_path, _quiet(10)), notes)
+    stale = next(d for d in data["days"] if d["date"] == "2026-03-05")
+    assert stale["status"] == "green"
+    assert stale["narrative"]["stale"] is True
+
+    # No recorded grade means nothing to contradict — never cry stale on a
+    # hand-written note that made no claim about colour.
+    plain = next(d for d in data["days"] if d["date"] == "2026-03-06")
+    assert plain["narrative"]["stale"] is False

@@ -21,5 +21,11 @@ Type=oneshot
 ExecStart=%h/projects/honeycow/tools/refresh-index.sh
 # Persistent data dir (survives reboot); override here if desired.
 Environment=HONEYCOW_ANALYSIS_DIR=%h/honeycow-analysis
+# Annotate EVERY settled day, not just yellow/red. A green day costs the same
+# as a yellow one (~12K input tokens — the bundle is mostly fixed context), and
+# the baseline is what makes a yellow mean anything. Comment out to go back to
+# non-green only; the annotator records which scope it ran under so the
+# dashboard's health line knows what counts as a gap either way.
+Environment=HONEYCOW_ANNOTATE_ALL=1
 Nice=10
 TimeoutStartSec=1800

@@ -62,7 +62,25 @@ RUBRIC = {
     "single_source_report": 0.5,
     # Exploit-shaped HTTP probing is sadly routine background, so this is a
     # spike test too — not an absolute count.
+    #
+    # Counted on DEDUPLICATED probes: sources running the same path-script are
+    # collapsed to one, charged at its loudest copy. All three days this rule
+    # ever graded yellow were 4-6 clones of one commodity kit — `libredtail-http`
+    # walking a fixed 40-48 path list in a 9-33s burst, then never returning.
+    # Four clones x 48 requests deterministically produce ~168 against a
+    # baseline of 56, so the rule was measuring how many copies of one scanner
+    # happened to reach us, not how hard anyone was trying. Collapsing them
+    # leaves the range intact (median 44/day, max 125, top ratio 2.55x) — it
+    # takes a genuinely bigger or newer behaviour to fire now, not more clones.
     "exploit_spike_yellow": 3.0,
+    # Two sources belong to the same behaviour when their distinct-path sets
+    # overlap this much. Not 1.0: the twin secret-scanners of 2026-09-07 walked
+    # the same 637-path list but each stamped one nonce path
+    # (`/__aws_leak_probe_<random>__`), so exact-set matching split them at
+    # Jaccard 0.997. Any threshold in ~0.5-0.99 clusters that pair identically;
+    # 0.9 is picked to still separate kits that share a common prefix of
+    # popular paths.
+    "kit_similarity": 0.90,
     # CVE-trigger recon: a steady ~2/day trickle on a weekly cadence turned out
     # to be one scheduled scanner, not an incident — grading that yellow painted
     # the calendar every Tuesday and taught you to ignore yellow. The count is
@@ -98,6 +116,31 @@ def _worst(a: str, b: str) -> str:
     return a if STATUS_RANK[a] >= STATUS_RANK[b] else b
 
 
+def cluster_by_paths(path_sets: dict[str, set[str]], threshold: float) -> list[list[str]]:
+    """Group sources that walked the same path list into one behaviour.
+
+    Greedy leader assignment, sources visited widest-set-first so the fullest
+    run of a kit becomes the leader and truncated copies join it. Deliberately
+    NOT single-linkage: chaining would let a long chain of pairwise-similar
+    sets merge two behaviours that share nothing, which is exactly the failure
+    that would quietly hide a real campaign inside a commodity cluster.
+
+    O(sources x clusters) with ~90 sources on a busy day — small enough that
+    the obvious algorithm is the right one.
+    """
+    leaders: list[tuple[set[str], list[str]]] = []
+    for ip in sorted(path_sets, key=lambda k: (-len(path_sets[k]), k)):
+        s = path_sets[ip]
+        for lead, members in leaders:
+            union = len(lead | s)
+            if union and len(lead & s) / union >= threshold:
+                members.append(ip)
+                break
+        else:
+            leaders.append((s, [ip]))
+    return [members for _, members in leaders]
+
+
 def grade_day(day: dict, baseline: dict) -> tuple[str, list[str]]:
     """Return (status, [human-readable reasons]) for one day.
 
@@ -131,7 +174,11 @@ def grade_day(day: dict, baseline: dict) -> tuple[str, list[str]]:
     r = ratio(day["exploit"], baseline["exploit"])
     if day["exploit"] and r >= RUBRIC["exploit_spike_yellow"]:
         status = _worst(status, "yellow")
-        why.append(f"exploit-shaped HTTP {r:.1f}x baseline ({day['exploit']} probes)")
+        clones = day.get("exploit_raw", day["exploit"]) - day["exploit"]
+        dedup = (f"; {day['exploit_raw']:,} raw, {clones:,} from clone sources "
+                 f"running an already-counted path-script") if clones else ""
+        why.append(f"exploit-shaped HTTP {r:.1f}x baseline "
+                   f"({day['exploit']} deduplicated probes{dedup})")
 
     if day["cve_trigger"] >= RUBRIC["cve_trigger_yellow"]:
         status = _worst(status, "yellow")
@@ -226,6 +273,11 @@ def load_narratives(notes_dir: Path | None) -> dict[str, dict]:
             "source": meta.get("source", "human"),
             "model": meta.get("model", ""),
             "generated": meta.get("generated", ""),
+            # The grade the note was written against. A rubric tweak can regrade
+            # the day underneath a note that is now arguing about a colour the
+            # day no longer has — and `annotate.py` is idempotent, so it will
+            # never revisit it. Carried so the page can say so out loud.
+            "graded_status": meta.get("status", ""),
         }
     return out
 
@@ -240,16 +292,24 @@ def annotator_health(days: list[dict], notes_dir: Path | None) -> dict:
     dead. The operator may not look at this for weeks; the page has to be able
     to say "nothing has interpreted these days" without being told.
     """
-    health: dict = {"last_run": "", "ok": None, "error": "", "missing": []}
+    health: dict = {"last_run": "", "ok": None, "error": "", "missing": [],
+                    "coverage": "non-green"}
     if notes_dir and (sf := notes_dir / "_status.json").is_file():
         try:
             st = json.loads(sf.read_text())
             health.update({"last_run": st.get("last_run", ""), "ok": st.get("ok"),
-                           "error": st.get("error") or ""})
+                           "error": st.get("error") or "",
+                           "coverage": st.get("coverage", "non-green")})
         except (OSError, json.JSONDecodeError):
             health["error"] = "unreadable _status.json"
+    # The annotator declares its SCOPE; the count is still computed here from
+    # the days and the notes on disk. Anything unreadable falls back to the
+    # narrower scope, so a broken status file understates the gap rather than
+    # inventing one.
+    in_scope = (lambda d: True) if health["coverage"] == "all" else \
+               (lambda d: d["status"] != "green")
     health["missing"] = [d["date"] for d in days
-                         if d["status"] != "green" and not d["partial"] and not d["narrative"]]
+                         if in_scope(d) and not d["partial"] and not d["narrative"]]
     return health
 
 
@@ -275,6 +335,9 @@ def build(db_path: Path, notes_dir: Path | None = None) -> dict:
             # day is embedded in the page.
             "dns_sources": {}, "http_sources": {},
             "http_paths": {}, "user_agents": {},
+            # Per-source exploit probe counts and distinct paths, used to
+            # collapse clone scanners before grading. Trimmed before embedding.
+            "exploit_sources": {}, "exploit_paths": {}, "exploit_unattributed": 0,
         })
 
     for r in conn.execute(
@@ -335,6 +398,15 @@ def build(db_path: Path, notes_dir: Path | None = None) -> dict:
         s["http_families"][fam] = s["http_families"].get(fam, 0) + 1
         if fam in EXPLOIT_FAMILIES:
             s["exploit"] += 1
+            if ip and not is_private_or_loopback(ip):
+                s["exploit_sources"][ip] = s["exploit_sources"].get(ip, 0) + 1
+                s["exploit_paths"].setdefault(ip, set()).add(r["path"] or "")
+            else:
+                # Arrived through the proxy without a forwarded client IP (~1%
+                # of exploit rows). Unattributable means unclusterable, so these
+                # pass through UNDEDUPLICATED rather than being dropped —
+                # missing attribution must never quietly lower a grade.
+                s["exploit_unattributed"] += 1
         if r["path"]:
             s["http_paths"][r["path"]] = s["http_paths"].get(r["path"], 0) + 1
         if r["user_agent"]:
@@ -367,6 +439,18 @@ def build(db_path: Path, notes_dir: Path | None = None) -> dict:
             day[f"{proto}_top"] = list(top) if top else None
             day[f"{proto}_ex_top"] = max(day[total_key] - (top[1] if top else 0), 0)
 
+    # --- deduplicated exploit probes: each distinct path-script counted once ---
+    # Charged at the loudest copy rather than summed, so one kit contributes what
+    # one run of it costs. `exploit_raw` survives for the panel: colour grades
+    # deviation, the detail shows everything.
+    for day in ordered:
+        day["exploit_raw"] = day["exploit"]
+        counts = day["exploit_sources"]
+        kits = cluster_by_paths(day["exploit_paths"], RUBRIC["kit_similarity"]) if counts else []
+        day["exploit_kits"] = len(kits)
+        day["exploit"] = (sum(max(counts[ip] for ip in members) for members in kits)
+                          + day["exploit_unattributed"])
+
     # --- first-seen sources (drives the "new campaign found us" signal) ---
     seen: set[str] = set()
     for day in ordered:
@@ -389,6 +473,9 @@ def build(db_path: Path, notes_dir: Path | None = None) -> dict:
         day["status"], day["why"] = grade_day(day, baseline)
         day["baseline"] = {k: round(v, 1) for k, v in baseline.items()}
         day["narrative"] = narratives.get(day["date"])
+        if day["narrative"]:
+            was = day["narrative"]["graded_status"]
+            day["narrative"]["stale"] = bool(was) and was != day["status"]
 
     # --- trim the wide dicts to top-N for embedding ---
     def top(d: dict, n: int) -> list[list]:
@@ -396,6 +483,7 @@ def build(db_path: Path, notes_dir: Path | None = None) -> dict:
 
     for day in ordered:
         del day["dns_sources"], day["http_sources"]  # working state, not page data
+        del day["exploit_sources"], day["exploit_paths"], day["exploit_unattributed"]
         day["sources"] = top(day["sources"], 10)
         day["families"] = top(day["families"], 8)
         day["http_families"] = top(day["http_families"], 8)

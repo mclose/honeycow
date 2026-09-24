@@ -198,17 +198,34 @@ cert via DNS-01 over BIND nsupdate). All three are required.
   per-row `rowhash`, so re-ingesting overlapping data never double-counts.
 - `tools/dashboard.py` + `dashboard_template.html` — renders the daily-watch
   page. The grading rubric is one config block at the top of the script.
-- `tools/annotate.py` — retrospective analyst note for every settled non-green
-  day, via the Anthropic API (Opus by default). Idempotent (skips days that
-  already have a note), capped with `--max-days` so a rebuild can't fan out,
-  and `--dry-run` costs nothing. Key comes from `ANTHROPIC_API_KEY` or the
-  gitignored `.env.analysis` — deliberately NOT the honeypot's `.env`, whose
-  sibling lives on the public VPS.
+- `tools/annotate.py` — retrospective analyst note for every settled day, via
+  the Anthropic API (Opus by default). Scope is non-green days unless
+  `--all-days` / `HONEYCOW_ANNOTATE_ALL=1`, which the systemd unit sets: a
+  green day costs the same as a yellow one (~12K input tokens — the bundle is
+  mostly fixed context, measured ~$0.10/day) and the baseline is what makes a
+  yellow mean anything. Idempotent, capped with `--max-days` so a rebuild
+  can't fan out, and `--dry-run` costs nothing. Each run prints and records an
+  estimated spend. Key comes from `ANTHROPIC_API_KEY` or the gitignored
+  `.env.analysis` — deliberately NOT the honeypot's `.env`, whose sibling
+  lives on the public VPS.
+  A note is regenerated when its recorded **verdict** OR its recorded
+  **rubric fingerprint** goes stale — the second case is the one that used to
+  slip through: a threshold moves, the colour doesn't change, and the prose
+  keeps quoting a ratio nothing computes any more.
 - `tools/refresh-index.sh` — pull + ingest + annotate + render, under a
   lockfile. What the systemd timer runs (`deploy/systemd/`). The annotate step
   is non-fatal: a failed API call must still leave a rendered dashboard.
 
 ## Analysis pipeline (runs on claude, NOT the honeypot)
+
+**The timer runs the working tree, not `HEAD`.** `refresh-index.sh` calls
+`make -C ~/projects/honeycow ...`, so an uncommitted edit to `dashboard.py` or
+`annotate.py` is live on the dashboard within four hours — including regrading
+history and pruning the notes that regrade stranded. That is convenient for
+iteration and a trap if you leave an experiment in the tree: there is no deploy
+step to forget, so the commit is catching up to production rather than
+reaching it.
+
 
 The raw logs live on the honeycow VPS; analysis runs on the report host and
 pulls them down. `make refresh` = `pull` → `ingest` → `annotate` → `dashboard`,
@@ -217,7 +234,8 @@ fired 4-hourly by a systemd **user** timer anchored to America/Chicago.
     make pull       # incremental: only the new delta crosses the wire
     make ingest     # (re)build ~/honeycow-analysis/honeycow.db
     make report     # fast report from the index (report-raw reads raw files)
-    make annotate   # model notes for settled yellow/red days (DRY_RUN=1 first)
+    make annotate   # model notes for settled days (DRY_RUN=1 first; ALL_DAYS=1,
+                    # MAX_DAYS=n; the timer runs with ALL_DAYS on)
     make dashboard  # render to ~/www/honeycow-dash, served by caddy-claude
                     # at honeycow.lab.deflationhollow.net (tailnet-only)
 
@@ -231,7 +249,7 @@ Rules that matter here:
 - **The dashboard detects; it does not interpret.** Counts and grades are
   computed and never inferred. Interpretation lives in a separate per-day slot
   (`--notes`) that **never feeds a grade**. `tools/annotate.py` fills that slot
-  automatically for settled yellow/red days via the Anthropic API, and every
+  automatically for every settled day via the Anthropic API, and every
   such note is stamped with the model that wrote it and rendered with a
   "written by <model>, not a measurement" byline. A note may be wrong; a count
   may not. Keep that boundary — the moment a narrative can move a colour, the

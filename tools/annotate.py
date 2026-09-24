@@ -336,8 +336,16 @@ def render_note(text: str, model: str, status: str) -> str:
     )
 
 
+class Refused(Exception):
+    """The model declined this bundle. A gap in coverage, not a malfunction."""
+
+    def __init__(self, category: str) -> None:
+        super().__init__(f"declined ({category})")
+        self.category = category
+
+
 def annotate_day(client, model: str, evidence: dict,
-                 cve_context: list[dict]) -> tuple[str, object]:
+                 cve_context: list[dict]) -> tuple[str, object, str]:
     """One API call, one day's note.
 
     The CVE signature list is identical for every day in a run and is over half
@@ -348,9 +356,19 @@ def annotate_day(client, model: str, evidence: dict,
     it is the difference between paying for those tokens 30 times and paying
     once. `--all-days` makes backfills the normal case.
     """
-    resp = client.messages.create(
+    resp = client.beta.messages.create(
         model=model,
         max_tokens=4000,
+        # Opus 5's safety classifiers decline some of these bundles outright —
+        # 2026-09-19 came back `category='cyber'`, which is unsurprising when
+        # the payload is exploit paths, scanner user-agents and CVE
+        # signatures. `fallbacks="default"` re-runs a declined request
+        # server-side, routed by refusal category (cyber goes to Opus 4.8), so
+        # the day gets interpreted instead of being lost to a refusal. Prefer
+        # "default" over pinning a model: different fallbacks carry different
+        # classifiers, and a pin is a migration you owe later.
+        betas=["server-side-fallback-2026-07-01"],
+        fallbacks="default",
         system=[
             {"type": "text", "text": SYSTEM_PROMPT},
             {"type": "text",
@@ -367,11 +385,15 @@ def annotate_day(client, model: str, evidence: dict,
                    + json.dumps(evidence, indent=1, sort_keys=True, default=str)}],
     )
     if resp.stop_reason == "refusal":
-        raise RuntimeError(f"model declined: {resp.stop_details}")
+        # The whole chain declined, fallback included. Distinct from a broken
+        # annotator — see the `Refused` handling in main().
+        raise Refused(getattr(resp.stop_details, "category", None) or "unknown")
     text = "".join(b.text for b in resp.content if b.type == "text").strip()
     if not text:
         raise RuntimeError(f"empty response (stop_reason={resp.stop_reason})")
-    return text, resp.usage
+    # `resp.model` is whoever actually produced this — the fallback, if one
+    # ran. The byline has to name the writer, not the model we asked for.
+    return text, resp.usage, resp.model
 
 
 def _client(api_key: str | None):
@@ -457,27 +479,42 @@ def select_days(data: dict, notes_dir: Path, force: bool, only: str | None,
 
 def prune_stale_notes(data: dict, notes_dir: Path, dry_run: bool,
                       all_days: bool = False) -> list[str]:
-    """Drop MODEL-written notes for days no longer in scope.
+    """Drop MODEL-written notes that argue about a colour the day no longer has.
 
-    A rubric change can regrade a day to green, stranding a note that argues
-    about a red that no longer exists. Hand-written notes are never touched:
-    a human wrote that on purpose, and the day being quiet now is not a reason
-    to throw their reasoning away.
+    The case this exists for: a rubric change regrades a day to green, leaving
+    a note whose first sentence is "the red is...". That note is wrong and
+    nothing else would ever notice.
 
-    Under `--all-days` a green day's note is the point rather than an orphan,
-    so nothing is pruned for being green — otherwise each run would delete the
-    notes the previous run paid for and immediately rewrite them.
+    The test is the note's OWN recorded verdict, not the current run's scope.
+    Keying it on `--all-days` was a bug with a live cost: a single run without
+    the flag — `make annotate` by hand, or a timer whose unit file hadn't been
+    reinstalled yet — deleted every green note on disk, and the next run in
+    all-days mode paid to write them all again. It did exactly that on
+    2026-09-24 and cost $0.19 to undo. A note that says `status: green` on a
+    day that IS green is coherent under either scope and is never pruned.
+
+    Hand-written notes are never touched: a human wrote that on purpose, and
+    the day going quiet is not a reason to throw their reasoning away.
     """
-    if not notes_dir.is_dir() or all_days:
+    if not notes_dir.is_dir():
         return []
-    keep = {d["date"] for d in data["days"] if d["status"] != "green" and not d["partial"]}
+    status_now = {d["date"]: d["status"] for d in data["days"] if not d["partial"]}
     dropped = []
     for note in sorted(notes_dir.glob("*.md")):
-        if note.stem in keep or not _is_model_note(note):
+        if not _is_model_note(note):
             continue
-        dropped.append(note.stem)
-        if not dry_run:
-            note.unlink()
+        now = status_now.get(note.stem)
+        # Unknown day (fell out of the index) or a verdict that still matches
+        # what the note claims — nothing is being misrepresented either way.
+        if now is None or _note_status(note) == now:
+            continue
+        # The verdict changed. If the day is still graded, `select_days` will
+        # rewrite the note in place; only a day that went green has no writer
+        # coming for it, and only then when green is out of scope.
+        if now == "green" and not all_days:
+            dropped.append(note.stem)
+            if not dry_run:
+                note.unlink()
     return dropped
 
 
@@ -552,19 +589,26 @@ def main(argv: list[str] | None = None) -> int:
         print(f"annotate: {exc}", file=sys.stderr)
         return 1
 
-    spend = 0.0
+    spend, refused = 0.0, []
     for day in candidates:
         try:
             ev = gather_evidence(conn, day, data["days"][:by_date[day["date"]]])
-            text, usage = annotate_day(client, args.model, ev, cve_context)
+            text, usage, wrote_it = annotate_day(client, args.model, ev, cve_context)
             path = args.notes / f"{day['date']}.md"
-            path.write_text(render_note(text, args.model, day["status"]))
+            path.write_text(render_note(text, wrote_it, day["status"]))
             written.append(day["date"])
-            cost = estimate_cost(args.model, usage)
+            cost = estimate_cost(wrote_it, usage)
             spend += cost or 0.0
+            swap = f" via {wrote_it}" if wrote_it != args.model else ""
             print(f"wrote {path} ({len(text)} chars"
-                  + (f", ~${cost:.3f}" if cost is not None else "") + ")",
+                  + (f", ~${cost:.3f}" if cost is not None else "") + f"){swap}",
                   file=sys.stderr)
+        except Refused as exc:
+            # Not a failure of this tool. Recorded so the page can distinguish
+            # "a day nobody will interpret" from "the annotator is broken" —
+            # conflating them is how a health signal stops being read.
+            refused.append({"date": day["date"], "category": exc.category})
+            print(f"annotate: {day['date']} {exc}", file=sys.stderr)
         except Exception as exc:  # noqa: BLE001 — one bad day must not stop the rest
             error = f"{day['date']}: {exc}"
             print(f"annotate: {error}", file=sys.stderr)
@@ -573,13 +617,18 @@ def main(argv: list[str] | None = None) -> int:
     if written:
         print(f"annotated {len(written)} day(s), ~${spend:.2f} this run "
               f"(estimate; see the console for the real figure)", file=sys.stderr)
-    _write_status(args.notes, args.model, written, error, over_cap, args.all_days, spend)
+    if refused:
+        print(f"{len(refused)} day(s) declined by the model: "
+              + ", ".join(f"{r['date']} ({r['category']})" for r in refused),
+              file=sys.stderr)
+    _write_status(args.notes, args.model, written, error, over_cap, args.all_days,
+                  spend, refused)
     return 1 if error else 0
 
 
 def _write_status(notes: Path, model: str, written: list[str],
                   error: str | None, over_cap: int, all_days: bool = False,
-                  spend: float = 0.0) -> None:
+                  spend: float = 0.0, refused: list[dict] | None = None) -> None:
     notes.mkdir(parents=True, exist_ok=True)
     (notes / STATUS_FILE).write_text(json.dumps({
         "last_run": datetime.now(tz=UTC).isoformat(timespec="seconds"),
@@ -588,6 +637,10 @@ def _write_status(notes: Path, model: str, written: list[str],
         "written": written,
         "deferred_by_cap": over_cap,
         "estimated_usd": round(spend, 4),
+        # Declines are a coverage gap, not a malfunction: `ok` stays true so a
+        # recurring refusal can't train the operator to ignore a red health
+        # line, but the days are named so the gap is still visible.
+        "refused": refused or [],
         # What this annotator believes it is covering. `annotator_health` reads
         # it to know which days count as un-interpreted: under --all-days a
         # green day with no note is a gap, and without this the health line

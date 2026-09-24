@@ -155,7 +155,7 @@ def test_successful_run_writes_note_and_clears_status(tmp_path, monkeypatch):
     usage = SimpleNamespace(input_tokens=12_000, output_tokens=2_000,
                             cache_creation_input_tokens=0, cache_read_input_tokens=0)
     monkeypatch.setattr(ann, "annotate_day",
-                        lambda *a, **k: ("A known scanner fleet.", usage))
+                        lambda *a, **k: ("A known scanner fleet.", usage, "claude-opus-5"))
     assert ann.main(["--db", str(db), "--notes", str(notes)]) == 0
     note = (notes / "2026-03-02.md").read_text()
     assert "A known scanner fleet." in note
@@ -357,16 +357,45 @@ def test_rubric_fingerprint_moves_only_when_the_rubric_does(monkeypatch):
     assert ann.rubric_fingerprint() != before
 
 
-def test_all_days_mode_does_not_prune_the_green_notes_it_just_wrote(tmp_path):
-    """Pruning green notes under --all-days would delete every note the last
-    run paid for, then rewrite them — an infinite meter with no new signal."""
+def test_a_green_note_on_a_green_day_survives_either_scope(tmp_path):
+    """Regression, 2026-09-24: pruning keyed on the RUN's scope instead of the
+    note's own verdict, so one invocation without --all-days deleted every
+    green note on disk and the next run paid to rewrite them. A note that says
+    green on a day that is green misrepresents nothing under any scope."""
     db = _graded(tmp_path)
     data = dash.build(db)
     notes = tmp_path / "notes"
     green = next(d for d in data["days"] if d["status"] == "green" and not d["partial"])
     _note(notes, green["date"], status="green", rubric=ann.rubric_fingerprint())
     assert ann.prune_stale_notes(data, notes, dry_run=True, all_days=True) == []
+    assert ann.prune_stale_notes(data, notes, dry_run=True) == []
+
+
+def test_a_note_arguing_about_a_colour_that_is_gone_is_still_pruned(tmp_path):
+    """The case pruning exists for: the day regraded green and the note still
+    opens "the red is...". Nothing will rewrite it, so it has to go."""
+    db = _graded(tmp_path)
+    data = dash.build(db)
+    notes = tmp_path / "notes"
+    green = next(d for d in data["days"] if d["status"] == "green" and not d["partial"])
+    _note(notes, green["date"], status="red", rubric=ann.rubric_fingerprint())
     assert green["date"] in ann.prune_stale_notes(data, notes, dry_run=True)
+    # ...but under --all-days `select_days` rewrites it in place instead.
+    assert ann.prune_stale_notes(data, notes, dry_run=True, all_days=True) == []
+    assert green["date"] in {d["date"]
+                             for d in ann.select_days(data, notes, False, None, all_days=True)}
+
+
+def test_a_stale_verdict_on_a_still_graded_day_is_rewritten_not_deleted(tmp_path):
+    """A note claiming green on a day that is now yellow must not be pruned —
+    `select_days` owns that case, and deleting it would lose the slot."""
+    db = _graded(tmp_path)
+    data = dash.build(db)
+    notes = tmp_path / "notes"
+    graded = next(d for d in data["days"] if d["status"] != "green" and not d["partial"])
+    _note(notes, graded["date"], status="green", rubric=ann.rubric_fingerprint())
+    assert ann.prune_stale_notes(data, notes, dry_run=True) == []
+    assert graded["date"] in {d["date"] for d in ann.select_days(data, notes, False, None)}
 
 
 def test_health_counts_green_gaps_only_when_the_annotator_claims_them(tmp_path):
@@ -386,3 +415,48 @@ def test_health_counts_green_gaps_only_when_the_annotator_claims_them(tmp_path):
     (notes / ann.STATUS_FILE).write_text("{not json")
     broken = dash.build(db, notes)["annotator"]
     assert broken["missing"] == narrow["missing"], "a broken file must understate, not invent"
+
+
+def test_a_refusal_is_a_coverage_gap_not_a_broken_annotator(tmp_path, monkeypatch):
+    """2026-09-19 came back `category='cyber'` — unsurprising when the payload
+    is exploit paths and scanner UAs. A recurring decline must not leave the
+    health line permanently red, or it stops being read; the day still has to
+    be named."""
+    db = _graded(tmp_path)
+    notes = tmp_path / "notes"
+    monkeypatch.setattr(ann, "_client", lambda key: object())
+    monkeypatch.setattr(ann, "annotate_day",
+                        lambda *a, **k: (_ for _ in ()).throw(ann.Refused("cyber")))
+    assert ann.main(["--db", str(db), "--notes", str(notes)]) == 0
+    status = json.loads((notes / ann.STATUS_FILE).read_text())
+    assert status["ok"] is True, "a decline is not a malfunction"
+    assert status["error"] is None
+    assert [r["category"] for r in status["refused"]] == ["cyber"]
+    assert status["written"] == []
+    assert not (notes / "2026-03-02.md").exists(), "no note is better than a wrong one"
+
+
+def test_a_real_failure_still_marks_the_run_not_ok(tmp_path, monkeypatch):
+    """The other side of the same boundary — a broken client must still be loud."""
+    db = _graded(tmp_path)
+    notes = tmp_path / "notes"
+    monkeypatch.setattr(ann, "_client", lambda key: object())
+    monkeypatch.setattr(ann, "annotate_day",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("500 boom")))
+    assert ann.main(["--db", str(db), "--notes", str(notes)]) == 1
+    status = json.loads((notes / ann.STATUS_FILE).read_text())
+    assert status["ok"] is False and "500 boom" in status["error"]
+
+
+def test_the_byline_names_the_model_that_actually_wrote_it(tmp_path, monkeypatch):
+    """A cyber refusal routes to Opus 4.8. If the note still claims Opus 5, the
+    provenance stamp is a lie — and provenance is the whole point of the slot."""
+    db = _graded(tmp_path)
+    notes = tmp_path / "notes"
+    usage = SimpleNamespace(input_tokens=1, output_tokens=1,
+                            cache_creation_input_tokens=0, cache_read_input_tokens=0)
+    monkeypatch.setattr(ann, "_client", lambda key: object())
+    monkeypatch.setattr(ann, "annotate_day",
+                        lambda *a, **k: ("Fallback prose.", usage, "claude-opus-4-8"))
+    assert ann.main(["--db", str(db), "--notes", str(notes)]) == 0
+    assert "model: claude-opus-4-8" in (notes / "2026-03-02.md").read_text()

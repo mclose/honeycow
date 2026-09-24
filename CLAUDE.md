@@ -218,13 +218,25 @@ cert via DNS-01 over BIND nsupdate). All three are required.
 
 ## Analysis pipeline (runs on claude, NOT the honeypot)
 
-**The timer runs the working tree, not `HEAD`.** `refresh-index.sh` calls
-`make -C ~/projects/honeycow ...`, so an uncommitted edit to `dashboard.py` or
-`annotate.py` is live on the dashboard within four hours — including regrading
-history and pruning the notes that regrade stranded. That is convenient for
-iteration and a trap if you leave an experiment in the tree: there is no deploy
-step to forget, so the commit is catching up to production rather than
-reaching it.
+**The timer runs the working tree, not `HEAD` — except for the unit file.**
+`refresh-index.sh` calls `make -C ~/projects/honeycow ...`, so an uncommitted
+edit to `dashboard.py` or `annotate.py` is live on the dashboard within four
+hours, including regrading history. No deploy step to forget — which makes the
+one thing that *does* need installing easy to miss: `deploy/systemd/*.service`
+is a **template**, copied to `~/.config/systemd/user/`. Editing the repo copy
+changes nothing until you re-copy it and `systemctl --user daemon-reload`.
+Two deploy models in one pipeline; the silent one is the unit file.
+
+**A refusal is a coverage gap, not a malfunction.** Opus 5's classifiers
+decline some evidence bundles outright (2026-09-19 came back
+`category='cyber'` — unsurprising when the payload is exploit paths, scanner
+user-agents and CVE signatures). `annotate.py` sends
+`fallbacks="default"` so a decline re-runs server-side on Anthropic's
+recommended substitute, and records any surviving refusal under `refused` in
+`_status.json` **without** setting `ok: false`. Keep that split: a recurring
+decline that paints the health line red permanently is how the health line
+stops being read. Notes are stamped with `resp.model`, so a note written by
+the fallback says so.
 
 
 The raw logs live on the honeycow VPS; analysis runs on the report host and

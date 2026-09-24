@@ -2,3 +2,7 @@
 # which builds the honeypot image). tools/annotate.py needs the Anthropic SDK;
 # the container must stay minimal and offline.
 anthropic>=0.69
+
+# Nameserver sensor index (tools/ingest_ns.py). Analysis host only — never in
+# requirements.txt, which is pip-compiled into the lock the honeypot image installs.
+duckdb>=1.5

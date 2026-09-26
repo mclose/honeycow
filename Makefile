@@ -37,6 +37,8 @@ UFW          ?= $(ANALYSIS_DIR)/ufw.log
 HOURS        ?= 24
 # SQLite analysis index built by `make ingest` (derived, rebuildable).
 DB           ?= $(ANALYSIS_DIR)/honeycow.db
+# Nameserver sensor index. DuckDB, not SQLite: see the header of tools/ingest_ns.py.
+NS_DB        ?= $(ANALYSIS_DIR)/ns.duckdb
 # Operator-specific list of our own IPs/CIDRs. Gitignored. Bucketed as
 # self-test in the morning report so triage focuses on "not us" traffic.
 OUR_IPS_FILE ?= tools/our-ips.txt
@@ -262,6 +264,16 @@ annotate:  ## Write model notes for settled days (DRY_RUN=1, DAY=, FORCE=1, ALL_
 	@$(PY) tools/annotate.py --db $(DB) --notes $(DASH_NOTES) \
 		$(if $(DRY_RUN),--dry-run) $(if $(DAY),--day $(DAY)) $(if $(FORCE),--force) \
 		$(if $(ALL_DAYS),--all-days) $(if $(MAX_DAYS),--max-days $(MAX_DAYS))
+
+pull-ns:  ## Pull BIND query logs from ns1-3 to $(ANALYSIS_DIR)/ns (DRY_RUN=1)
+	@tools/pull-ns-logs.sh $(if $(DRY_RUN),--dry-run)
+
+ingest-ns:  ## Build the nameserver DuckDB index (DRY_RUN=1, REBUILD=1)
+	@$(PY) tools/ingest_ns.py --logs $(ANALYSIS_DIR)/ns --db $(NS_DB) \
+		$(if $(DRY_RUN),--dry-run) $(if $(REBUILD),--rebuild)
+
+ambient:  ## Per-day share of honeycow sources a real nameserver also saw
+	@$(PY) tools/ns_ambient.py --db $(NS_DB) --honeycow-db $(DB) $(if $(JSON),--json)
 
 dashboard:  ## Render the daily-watch dashboard to $(DASH_DIR)/index.html
 	@mkdir -p $(DASH_DIR)

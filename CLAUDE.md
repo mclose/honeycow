@@ -212,6 +212,21 @@ cert via DNS-01 over BIND nsupdate). All three are required.
   **rubric fingerprint** goes stale — the second case is the one that used to
   slip through: a threshold moves, the colour doesn't change, and the prose
   keeps quoting a ratio nothing computes any more.
+- `tools/pull-ns-logs.sh` + `tools/ingest_ns.py` — the **nameserver sensor**.
+  ns1/ns2/ns3 serve the real zones and are advertised in `.net`, so they see
+  legitimate resolution *plus* the same hostile background honeycow sees. rsync
+  (not a byte-tail — BIND rotates by renaming) into `<analysis>/ns/<host>/`,
+  then a parser into a **DuckDB** table. DuckDB because at 13.3M rows it is
+  0.27 GB against SQLite's 1.74 GB, full scans run 0.24-0.46s against 23-35s,
+  and it `ATTACH`es honeycow.db read-only so cross-sensor joins need no
+  migration. `duckdb` lives in `requirements-analysis.txt`, never the lock file.
+  Idempotent by (host, day) partition replace plus a per-file size:mtime skip —
+  a re-run over unchanged logs is 0.45s.
+- `tools/ns_ambient.py` — share of a day's honeycow sources that a real
+  nameserver also saw. **Measured, and it does NOT discriminate the rubric's
+  colours** (green median 11.4%, yellow 12.9%, red 11.7%; DNS-only 32.7% vs
+  33.3%). It is a fact for the annotator's evidence bundle, not a grading
+  input. See [[ns-sensor-findings]].
 - `tools/refresh-index.sh` — pull + ingest + annotate + render, under a
   lockfile. What the systemd timer runs (`deploy/systemd/`). The annotate step
   is non-fatal: a failed API call must still leave a rendered dashboard.

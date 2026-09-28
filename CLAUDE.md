@@ -284,12 +284,30 @@ Rules that matter here:
   (2026-05-19/20/24, 7/9, 4/4 and 3/3 ours), and the annotator then wrote threat
   analysis speculating about who the source was. 10.6% of every CVE-trigger
   query ever counted was ours.
+- **227 HTTP rows have a null `client_ip`, all on 2026-05-19.** Caddy was not
+  yet forwarding the real address; `src_ip` is the container's `172.18.0.4`.
+  0.2% of all HTTP, zero since June, and unfixable retroactively — the address
+  was never captured. It is left as-is rather than patched: those rows count
+  toward the day's `http` total but cannot be a busiest source, so
+  `single_source_report` and the breadth-adjusted volume rule both under-see
+  that one day. A note flagging it is correct for 05-19 and wrong as a live
+  concern, which is why it is written down here.
 - **`RUBRIC["contract"]` is the lever for input changes.** The note fingerprint
   hashes RUBRIC, so a moved threshold already invalidates prose that quoted it.
   A changed *input* — a new exclusion, a different denominator — hashes
   identically and leaves notes confidently stale. Bump `contract` when what the
-  rules SEE changes. Re-annotating the whole calendar costs ~$0.10/day and
-  drains on its own via the timer's `--max-days`.
+  rules SEE changes — and also when the *evidence bundle* gains a field, since
+  that prose was written with less information. Re-annotating the whole calendar
+  costs ~$0.10/day and drains on its own via the timer's `--max-days`.
+- **The bundle carries clone-group membership, declared self-traffic and
+  measured ambient background.** Each exists because a note got something wrong
+  without it: 05-19 claimed `kit_similarity` had missed a pairing it had in fact
+  collapsed at Jaccard 1.000 (it saw the group *count*, never the membership);
+  and every note's closing "v4-wide, not aimed at us" was an inference from path
+  shapes until ns1-3 could answer it as a number. Ambient is best-effort — a
+  missing `ns.duckdb` costs a line, never the note — and the prompt states
+  explicitly that it must not be argued from to a colour, because measured
+  against the record it does not track one.
 - **The dashboard detects; it does not interpret.** Counts and grades are
   computed and never inferred. Interpretation lives in a separate per-day slot
   (`--notes`) that **never feeds a grade**. `tools/annotate.py` fills that slot

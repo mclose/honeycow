@@ -50,13 +50,17 @@ except ImportError:
 # THE RUBRIC — tweak here, nowhere else.
 # ---------------------------------------------------------------------------
 RUBRIC = {
-    # Bump when a change alters what the rules SEE rather than where a line
-    # sits — a new exclusion, a changed denominator, a re-scoped input. The
-    # thresholds below are hashed into every note's `rubric:` stamp, so a moved
-    # line already invalidates the prose that quoted it; a changed input did
-    # not, and that is the hole this closes. 2026-09-28: bumped to 2 when
-    # operator-owned sources stopped being graded.
-    "contract": 2,
+    # The note-invalidating version. Every note stamps a hash of this dict, and
+    # a moved threshold therefore already invalidates prose that quoted it. Bump
+    # `contract` for the changes a threshold hash cannot see but that would make
+    # a note read differently today:
+    #   - what the rules SEE (a new exclusion, a changed denominator)
+    #   - what the ANNOTATOR sees (a field added to the evidence bundle)
+    # Both mean the existing prose was written with different information.
+    # 2026-09-28 -> 2: operator-owned sources stopped being graded.
+    # 2026-09-28 -> 3: clone-group membership, declared self-traffic and
+    #   measured ambient background added to the bundle.
+    "contract": 3,
     # Trailing window used for the "normal" baseline each day is compared to.
     "trailing_days": 28,
     # Relative volume spikes, as a multiple of the trailing median.
@@ -510,6 +514,18 @@ def build(db_path: Path, notes_dir: Path | None = None,
         counts = day["exploit_sources"]
         kits = cluster_by_paths(day["exploit_paths"], RUBRIC["kit_similarity"]) if counts else []
         day["exploit_kits"] = len(kits)
+        # WHICH sources collapsed together, not just how many groups. The count
+        # alone is not enough to reason from: on 2026-05-19 a note saw two IPs
+        # running an identical 45-path script and concluded kit_similarity had
+        # missed them, when it had in fact collapsed them at Jaccard 1.000 and
+        # the deduped total simply sat below the threshold. Membership settles
+        # that without the reader guessing.
+        day["exploit_clusters"] = [
+            {"sources": sorted(m),
+             "probes_each": sorted(counts[i] for i in m),
+             "charged": max(counts[i] for i in m)}
+            for m in kits if len(m) > 1
+        ]
         day["exploit"] = (sum(max(counts[ip] for ip in members) for members in kits)
                           + day["exploit_unattributed"])
 

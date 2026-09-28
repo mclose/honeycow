@@ -32,14 +32,31 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 try:
-    from tools.honeycow_digest import ip_in_nets, is_private_or_loopback, load_research_cidrs
+    from tools.honeycow_digest import (
+        ip_in_nets,
+        is_private_or_loopback,
+        load_our_ips,
+        load_research_cidrs,
+    )
 except ImportError:
-    from honeycow_digest import ip_in_nets, is_private_or_loopback, load_research_cidrs
+    from honeycow_digest import (
+        ip_in_nets,
+        is_private_or_loopback,
+        load_our_ips,
+        load_research_cidrs,
+    )
 
 # ---------------------------------------------------------------------------
 # THE RUBRIC — tweak here, nowhere else.
 # ---------------------------------------------------------------------------
 RUBRIC = {
+    # Bump when a change alters what the rules SEE rather than where a line
+    # sits — a new exclusion, a changed denominator, a re-scoped input. The
+    # thresholds below are hashed into every note's `rubric:` stamp, so a moved
+    # line already invalidates the prose that quoted it; a changed input did
+    # not, and that is the hole this closes. 2026-09-28: bumped to 2 when
+    # operator-owned sources stopped being graded.
+    "contract": 2,
     # Trailing window used for the "normal" baseline each day is compared to.
     "trailing_days": 28,
     # Relative volume spikes, as a multiple of the trailing median.
@@ -226,6 +243,17 @@ def grade_day(day: dict, baseline: dict) -> tuple[str, list[str]]:
                        f"came from one source, {top[0]} — burst, not breadth; "
                        f"excluded from the volume grade")
 
+    # Reported, never graded. Our own traffic is not a finding, but hiding it
+    # would make a quiet day indistinguishable from a day we forgot to look.
+    if day.get("self_dns") or day.get("self_http"):
+        bits = []
+        if day.get("self_dns"):
+            bits.append(f"{day['self_dns']:,} DNS")
+        if day.get("self_http"):
+            bits.append(f"{day['self_http']:,} HTTP")
+        why.append(f"{' + '.join(bits)} from our own hosts — excluded from every "
+                   f"count and grade on this card")
+
     if not why:
         why.append("all volumes within band; probes absorbed by the exemption lists")
     return status, why
@@ -313,11 +341,33 @@ def annotator_health(days: list[dict], notes_dir: Path | None) -> dict:
     return health
 
 
-def build(db_path: Path, notes_dir: Path | None = None) -> dict:
+# Same relative-path convention as `config/source_exemptions.txt` below: the
+# default is the real list, so a caller that forgets the argument still gets
+# self-traffic excluded. Exclusion must be the default — the opposite footgun
+# is what let three days grade yellow on our own smoke tests for four months.
+DEFAULT_OUR_IPS = Path("tools/our-ips.txt")
+
+
+def build(db_path: Path, notes_dir: Path | None = None,
+          our_ips_file: Path | None = DEFAULT_OUR_IPS) -> dict:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
 
     research_nets = load_research_cidrs(Path("config/source_exemptions.txt"))
+    # OUR OWN TRAFFIC IS NOT A FINDING. `is_private_or_loopback` catches the
+    # container healthcheck but nothing else: claude, docker-nyc3 and the
+    # nameservers all have public addresses and read as external scanners.
+    #
+    # That was not theoretical. The yellows on 2026-05-19, 05-20 and 05-24 were
+    # driven entirely (4/4 and 3/3) or almost entirely (7/9) by smoke-test
+    # queries from claude, and the annotator was then handed those rows and
+    # wrote threat analysis speculating about who the source might be. 10.6% of
+    # every CVE-trigger query ever counted is ours.
+    #
+    # Loaded here rather than baked in at ingest on purpose: the list changes
+    # as the fleet does, and a derived index should not need a REBUILD to learn
+    # that a host is ours.
+    our_nets = load_our_ips(our_ips_file, [])
     narratives = load_narratives(notes_dir)
 
     # --- per-day DNS ---
@@ -338,6 +388,8 @@ def build(db_path: Path, notes_dir: Path | None = None) -> dict:
             # Per-source exploit probe counts and distinct paths, used to
             # collapse clone scanners before grading. Trimmed before embedding.
             "exploit_sources": {}, "exploit_paths": {}, "exploit_unattributed": 0,
+            # Our own traffic: reported on the card, excluded from every grade.
+            "self_dns": 0, "self_http": 0,
         })
 
     for r in conn.execute(
@@ -346,7 +398,13 @@ def build(db_path: Path, notes_dir: Path | None = None) -> dict:
     ):
         s = slot(r["d"])
         ip = r["src_ip"] or ""
+        ours = ip_in_nets(ip, our_nets) if ip else False
         if r["event"] == "query":
+            if ours:
+                # Counted and shown, never graded — same contract the morning
+                # report already applies to self-tests.
+                s["self_dns"] += 1
+                continue
             s["dns_queries"] += 1
             if not is_private_or_loopback(ip):
                 s["dns_external"] += 1
@@ -377,7 +435,8 @@ def build(db_path: Path, notes_dir: Path | None = None) -> dict:
         "GROUP BY d, src_ip, dns_id, src_port HAVING COUNT(*) >= ?",
         (RUBRIC["reflection_burst_min_packets"],),
     ):
-        if is_private_or_loopback(r["src_ip"] or ""):
+        burst_ip = r["src_ip"] or ""
+        if is_private_or_loopback(burst_ip) or ip_in_nets(burst_ip, our_nets):
             continue  # our own healthcheck/self-tests, not a reflection victim
         slot(r["d"])["reflection_bursts"].append({
             "src_ip": r["src_ip"], "qtype": r["qtype"], "n": r["n"],
@@ -389,8 +448,11 @@ def build(db_path: Path, notes_dir: Path | None = None) -> dict:
         "SELECT substr(ts,1,10) d, client_ip, src_ip, family, path, user_agent FROM http"
     ):
         s = slot(r["d"])
-        s["http"] += 1
         ip = r["client_ip"] or r["src_ip"] or ""
+        if ip and ip_in_nets(ip, our_nets):
+            s["self_http"] += 1
+            continue
+        s["http"] += 1
         if ip and not is_private_or_loopback(ip):
             s["sources"][ip] = s["sources"].get(ip, 0) + 1
             s["http_sources"][ip] = s["http_sources"].get(ip, 0) + 1
@@ -519,11 +581,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--json", type=Path, default=None, help="also write the raw JSON")
     ap.add_argument("--notes", type=Path, default=None,
                     help="directory of per-day narrative markdown (YYYY-MM-DD.md)")
+    ap.add_argument("--our-ips-file", type=Path, default=Path("tools/our-ips.txt"),
+                    help="operator-owned IPs/CIDRs to exclude from grading "
+                         "(gitignored; see tools/our-ips.txt.example)")
     ap.add_argument("--dry-run", action="store_true",
                     help="print per-day verdicts; write nothing")
     args = ap.parse_args(argv)
 
-    data = build(args.db, args.notes)
+    data = build(args.db, args.notes, args.our_ips_file)
 
     if args.dry_run:
         for d in data["days"]:

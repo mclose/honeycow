@@ -273,6 +273,23 @@ Rules that matter here:
   as the source of truth.
 - **The data dir is persistent** (`~/honeycow-analysis`, never `/tmp`). The
   DB accumulates, so its UFW history outlives the VPS's ~5-week rotation.
+- **Our own traffic is never a finding.** `is_private_or_loopback` catches the
+  container healthcheck and nothing else — claude, docker-nyc3 and the
+  nameservers all have public addresses and read as external scanners without
+  it. `tools/our-ips.txt` (gitignored) is loaded by `dashboard.py` **and**
+  `annotate.py`, and operator-owned sources are bucketed as `self_dns` /
+  `self_http`: shown on the card, excluded from every count, grade and evidence
+  bundle. Exclusion is the *default* argument, not an opt-in — the opposite
+  footgun graded three days yellow on smoke tests from claude for four months
+  (2026-05-19/20/24, 7/9, 4/4 and 3/3 ours), and the annotator then wrote threat
+  analysis speculating about who the source was. 10.6% of every CVE-trigger
+  query ever counted was ours.
+- **`RUBRIC["contract"]` is the lever for input changes.** The note fingerprint
+  hashes RUBRIC, so a moved threshold already invalidates prose that quoted it.
+  A changed *input* — a new exclusion, a different denominator — hashes
+  identically and leaves notes confidently stale. Bump `contract` when what the
+  rules SEE changes. Re-annotating the whole calendar costs ~$0.10/day and
+  drains on its own via the timer's `--max-days`.
 - **The dashboard detects; it does not interpret.** Counts and grades are
   computed and never inferred. Interpretation lives in a separate per-day slot
   (`--notes`) that **never feeds a grade**. `tools/annotate.py` fills that slot

@@ -43,8 +43,10 @@ from pathlib import Path
 
 try:
     from tools.dashboard import EXPLOIT_FAMILIES, RUBRIC, build
+    from tools.honeycow_digest import ip_in_nets, load_our_ips
 except ImportError:
     from dashboard import EXPLOIT_FAMILIES, RUBRIC, build
+    from honeycow_digest import ip_in_nets, load_our_ips
 
 # Opus for the cross-day pattern work that justifies the call at all —
 # "same tooling as 07-16", "this is a measurement study, not recon". Even at
@@ -158,7 +160,28 @@ def _rows(conn: sqlite3.Connection, sql: str, args: tuple) -> list[dict]:
     return [dict(r) for r in conn.execute(sql, args)]
 
 
-def gather_evidence(conn: sqlite3.Connection, day: dict, prior: list[dict]) -> dict:
+def _drop_ours(rows: list[dict], our_nets: list) -> list[dict]:
+    """Strip our own hosts from an evidence table.
+
+    The grades already exclude them, but the bundle is assembled by separate
+    SQL that did not. On 2026-05-19 that handed the model seven smoke-test
+    queries from claude and it produced a paragraph speculating about who the
+    source might be and what PTR data it would need to attribute them. A note
+    that reasons about the operator's own traffic is worse than no note.
+    """
+    if not our_nets:
+        return rows
+    out = []
+    for row in rows:
+        ip = row.get("src_ip") or row.get("client_ip") or ""
+        if ip and ip_in_nets(ip, our_nets):
+            continue
+        out.append(row)
+    return out
+
+
+def gather_evidence(conn: sqlite3.Connection, day: dict, prior: list[dict],
+                    our_nets: list | None = None) -> dict:
     """Assemble the day's rows behind each fired rule, plus recurrence context.
 
     Deliberately wider than the day card: the card is what drove colour, this
@@ -219,17 +242,17 @@ def gather_evidence(conn: sqlite3.Connection, day: dict, prior: list[dict]) -> d
         },
     }
 
-    ev["http_talkers"] = _rows(conn, """
+    ev["http_talkers"] = _drop_ours(_rows(conn, """
         SELECT client_ip, COUNT(*) requests, COUNT(DISTINCT path) distinct_paths,
                MIN(ts) first_seen, MAX(ts) last_seen,
                (julianday(MAX(ts)) - julianday(MIN(ts))) * 86400.0 span_s
         FROM http WHERE substr(ts,1,10)=?
-        GROUP BY client_ip ORDER BY requests DESC LIMIT 8""", (d,))
+        GROUP BY client_ip ORDER BY requests DESC LIMIT 8""", (d,)), our_nets)
 
     # Which UA each talker used — the join that makes recurrence detectable.
     # Ranked WITHIN each client: a global top-N is a sample of the busiest
     # pairs, which silently misrepresents a loud talker that rotates UAs.
-    ev["talker_user_agents"] = _rows(conn, """
+    ev["talker_user_agents"] = _drop_ours(_rows(conn, """
         SELECT client_ip, user_agent, n FROM (
             SELECT client_ip, user_agent, COUNT(*) n,
                    ROW_NUMBER() OVER (PARTITION BY client_ip ORDER BY COUNT(*) DESC) rk
@@ -238,33 +261,33 @@ def gather_evidence(conn: sqlite3.Connection, day: dict, prior: list[dict]) -> d
         WHERE rk <= 4 AND client_ip IN (
             SELECT client_ip FROM http WHERE substr(ts,1,10)=?
             GROUP BY client_ip ORDER BY COUNT(*) DESC LIMIT 5)
-        ORDER BY n DESC""", (d, d))
+        ORDER BY n DESC""", (d, d)), our_nets)
 
     # How many distinct identities each loud talker wore. A single client
     # cycling unrelated UA strings is a signature in itself.
-    ev["talker_ua_diversity"] = _rows(conn, """
+    ev["talker_ua_diversity"] = _drop_ours(_rows(conn, """
         SELECT client_ip, COUNT(DISTINCT user_agent) distinct_user_agents,
                COUNT(*) requests
         FROM http WHERE substr(ts,1,10)=?
-        GROUP BY client_ip ORDER BY requests DESC LIMIT 5""", (d,))
+        GROUP BY client_ip ORDER BY requests DESC LIMIT 5""", (d,)), our_nets)
 
     fired = " ".join(day["why"]).lower()
 
     if "exploit-shaped" in fired:
         marks = ",".join("?" * len(EXPLOIT_FAMILIES))
-        ev["exploit_probes"] = _rows(conn, f"""
+        ev["exploit_probes"] = _drop_ours(_rows(conn, f"""
             SELECT client_ip, family, user_agent, COUNT(*) n FROM http
             WHERE substr(ts,1,10)=? AND family IN ({marks})
             GROUP BY client_ip, family ORDER BY n DESC LIMIT 20""",
-            (d, *EXPLOIT_FAMILIES))
+            (d, *EXPLOIT_FAMILIES)), our_nets)
 
     if "cve-" in fired:
-        ev["cve_trigger_queries"] = _rows(conn, """
+        ev["cve_trigger_queries"] = _drop_ours(_rows(conn, """
             SELECT src_ip, qclass, qtype, COUNT(*) n,
                    COUNT(DISTINCT qname) distinct_qnames, MIN(qname) example_qname,
                    MIN(ts) first_seen, MAX(ts) last_seen
             FROM dns WHERE substr(ts,1,10)=? AND family='cve-2026-5946-trigger'
-            GROUP BY src_ip, qclass, qtype ORDER BY n DESC LIMIT 20""", (d,))
+            GROUP BY src_ip, qclass, qtype ORDER BY n DESC LIMIT 20""", (d,)), our_nets)
 
     if day["reflection_bursts"]:
         ev["reflection_bursts"] = day["reflection_bursts"][:5]
@@ -276,11 +299,11 @@ def gather_evidence(conn: sqlite3.Connection, day: dict, prior: list[dict]) -> d
         )
 
     if "dns volume" in fired:
-        ev["dns_talkers"] = _rows(conn, """
+        ev["dns_talkers"] = _drop_ours(_rows(conn, """
             SELECT src_ip, qtype, qclass, COUNT(*) n, COUNT(DISTINCT qname) distinct_qnames,
                    (julianday(MAX(ts)) - julianday(MIN(ts))) * 86400.0 span_s
             FROM dns WHERE substr(ts,1,10)=? AND event='query'
-            GROUP BY src_ip, qtype, qclass ORDER BY n DESC LIMIT 10""", (d,))
+            GROUP BY src_ip, qtype, qclass ORDER BY n DESC LIMIT 10""", (d,)), our_nets)
 
     # Recurrence context: prior non-green days with their loudest signature,
     # so "we have seen this tool before" is answerable from the bundle alone.
@@ -531,6 +554,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="ruminate taxonomy/ dir, used as context (optional)")
     ap.add_argument("--max-days", type=int, default=5,
                     help="cap API calls per run so a rebuild can't fan out")
+    ap.add_argument("--our-ips-file", type=Path, default=Path("tools/our-ips.txt"),
+                    help="operator-owned IPs/CIDRs; excluded from the evidence "
+                         "bundle as well as from the grades")
     ap.add_argument("--all-days", action="store_true",
                     default=os.environ.get("HONEYCOW_ANNOTATE_ALL") == "1",
                     help="annotate every settled day, green included "
@@ -541,7 +567,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="show what would be written; no API call, no writes")
     args = ap.parse_args(argv)
 
-    data = build(args.db)
+    data = build(args.db, our_ips_file=args.our_ips_file)
+    our_nets = load_our_ips(args.our_ips_file, [])
     pruned = prune_stale_notes(data, args.notes, args.dry_run, args.all_days)
     if pruned:
         print(f"{'[dry-run] would prune' if args.dry_run else 'pruned'} "
@@ -564,7 +591,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.dry_run:
         for day in candidates:
-            ev = gather_evidence(conn, day, data["days"][:by_date[day["date"]]])
+            ev = gather_evidence(conn, day, data["days"][:by_date[day["date"]]],
+                                 our_nets)
             size = len(json.dumps(ev, default=str))
             print(f"[dry-run] would annotate {day['date']} {day['status'].upper()} "
                   f"via {args.model} — bundle {size / 1024:.1f} KB, "
@@ -592,7 +620,8 @@ def main(argv: list[str] | None = None) -> int:
     spend, refused = 0.0, []
     for day in candidates:
         try:
-            ev = gather_evidence(conn, day, data["days"][:by_date[day["date"]]])
+            ev = gather_evidence(conn, day, data["days"][:by_date[day["date"]]],
+                                 our_nets)
             text, usage, wrote_it = annotate_day(client, args.model, ev, cve_context)
             path = args.notes / f"{day['date']}.md"
             path.write_text(render_note(text, wrote_it, day["status"]))

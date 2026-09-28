@@ -23,7 +23,8 @@ def _db(tmp_path, rows_by_day, ufw_days=()):
     for day, spec in rows_by_day.items():
         for i in range(spec.get("dns", 0)):
             dns.append((f"dns-{day}-{i}", f"{day}T10:00:00+00:00", 0, None, "udp",
-                        f"9.9.9.{i % 250}", 4000, None, 40, "query", None, "synth",
+                        spec.get("dns_src", f"9.9.9.{i % 250}"), 4000, None, 40,
+                        "query", None, "synth",
                         None, 0, 1.0, 1, "QUERY", "NOERROR", 256, 1, "x.test.",
                         "A", 1, "IN", 1, "NOERROR", 1, 0, 0, 90, 0, None, None,
                         None, None, spec.get("family", "other")))
@@ -442,3 +443,65 @@ def test_a_note_written_against_a_different_grade_is_marked_stale(tmp_path):
     # hand-written note that made no claim about colour.
     plain = next(d for d in data["days"] if d["date"] == "2026-03-06")
     assert plain["narrative"]["stale"] is False
+
+
+# --- our own traffic is never a finding ------------------------------------
+
+def _our_ips(tmp_path, *entries):
+    f = tmp_path / "our-ips.txt"
+    f.write_text("# operator-owned\n" + "\n".join(entries) + "\n")
+    return f
+
+
+def test_our_own_queries_do_not_drive_a_grade(tmp_path):
+    """Regression, found 2026-09-28: `is_private_or_loopback` catches the
+    container healthcheck but not claude's public address, so smoke-test
+    queries from the analysis host counted as external scanning. The yellows on
+    2026-05-19/20/24 were 7/9, 4/4 and 3/3 our own traffic."""
+    rows = _quiet(30)
+    rows["2026-03-31"] = {"dns": 10, "http": 100,
+                          "family": "cve-2026-5946-trigger", "dns_src": "9.9.9.9"}
+    db = _db(tmp_path, rows)
+    graded = dash.build(db, our_ips_file=None)
+    day = next(d for d in graded["days"] if d["date"] == "2026-03-31")
+    assert day["cve_trigger"] == 10 and day["status"] == "yellow"
+
+    # Now declare that source ours: the count and the colour must both go.
+    excluded = dash.build(db, our_ips_file=_our_ips(tmp_path, "9.9.9.0/24"))
+    day = next(d for d in excluded["days"] if d["date"] == "2026-03-31")
+    assert day["cve_trigger"] == 0, "our own probes must not be counted"
+    assert day["status"] == "green", "and must not colour the day"
+    assert day["self_dns"] == 10, "but must still be visible on the card"
+    assert any("our own hosts" in w for w in day["why"])
+
+
+def test_excluded_traffic_is_reported_not_hidden(tmp_path):
+    """Silence would make a quiet day indistinguishable from one we forgot to
+    look at. The count is shown; it just cannot move a colour."""
+    rows = _quiet(5)
+    db = _db(tmp_path, rows)
+    data = dash.build(db, our_ips_file=_our_ips(tmp_path, "5.5.5.0/24"))
+    day = data["days"][-1]
+    assert day["self_http"] > 0 and day["status"] == "green"
+    assert any("excluded from every count and grade" in w for w in day["why"])
+
+
+def test_our_own_burst_is_not_a_reflection_victim(tmp_path):
+    """A self-test loop reusing one txid+port is the reflection shape exactly."""
+    rows = _quiet(10)
+    rows["2026-03-11"] = {"dns": 10, "http": 10,
+                          "bursts": [{"n": 40, "src_ip": "9.9.9.9", "span": 5}]}
+    db = _db(tmp_path, rows)
+    assert next(d for d in dash.build(db, our_ips_file=None)["days"]
+                if d["date"] == "2026-03-11")["status"] == "red"
+    clean = dash.build(db, our_ips_file=_our_ips(tmp_path, "9.9.9.9"))
+    day = next(d for d in clean["days"] if d["date"] == "2026-03-11")
+    assert day["reflection_bursts"] == [] and day["status"] == "green"
+
+
+def test_exclusion_is_the_default_not_an_opt_in(tmp_path):
+    """The bug was that grading-without-exclusion was reachable by omission."""
+    assert dash.DEFAULT_OUR_IPS.name == "our-ips.txt"
+    import inspect
+    sig = inspect.signature(dash.build)
+    assert sig.parameters["our_ips_file"].default is dash.DEFAULT_OUR_IPS

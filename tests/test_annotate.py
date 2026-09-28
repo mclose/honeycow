@@ -460,3 +460,38 @@ def test_the_byline_names_the_model_that_actually_wrote_it(tmp_path, monkeypatch
                         lambda *a, **k: ("Fallback prose.", usage, "claude-opus-4-8"))
     assert ann.main(["--db", str(db), "--notes", str(notes)]) == 0
     assert "model: claude-opus-4-8" in (notes / "2026-03-02.md").read_text()
+
+
+def test_a_changed_grading_contract_invalidates_every_note(monkeypatch):
+    """The fingerprint hashed thresholds, so a moved line invalidated the prose
+    that quoted it. A changed *input* — 2026-09-28's operator-traffic exclusion
+    — hashed identically and left notes stale unless a colour happened to flip.
+    `contract` is the explicit lever for that class of change."""
+    before = ann.rubric_fingerprint()
+    monkeypatch.setitem(dash.RUBRIC, "contract", dash.RUBRIC["contract"] + 1)
+    assert ann.rubric_fingerprint() != before
+
+
+def test_the_bundle_never_contains_our_own_traffic(tmp_path):
+    """2026-05-19: seven smoke-test queries from claude reached the model, which
+    wrote a paragraph speculating about the source's provenance and what PTR
+    data it would need. Grades excluding them is not enough — the evidence the
+    note is written from is assembled by separate SQL."""
+    rows = _quiet(30)
+    rows["2026-03-31"] = {"dns": 10, "http": 100,
+                          "family": "cve-2026-5946-trigger", "dns_src": "9.9.9.9"}
+    db = _db(tmp_path, rows)
+    ours = tmp_path / "our-ips.txt"
+    ours.write_text("9.9.9.0/24\n")
+    from tools.honeycow_digest import load_our_ips
+    our_nets = load_our_ips(ours, [])
+
+    data = dash.build(db, our_ips_file=None)   # grade it so the rule fires
+    day = next(d for d in data["days"] if d["date"] == "2026-03-31")
+    conn = ann._connect(db)
+    dirty = ann.gather_evidence(conn, day, [])
+    clean = ann.gather_evidence(conn, day, [], our_nets)
+    conn.close()
+    assert any(r["src_ip"] == "9.9.9.9" for r in dirty["cve_trigger_queries"]), \
+        "without the filter our own probes reach the model"
+    assert clean["cve_trigger_queries"] == [], "with it, they do not"

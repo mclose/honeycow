@@ -141,7 +141,10 @@ say so and name the rule that should have.
 tooling, user-agent or path signature before, say so and give the dates and \
 the interval. A campaign returning on a cadence is worth more than one loud day.
 - Distinguish "aimed at us" from "aimed at the whole v4 internet". Almost all \
-of it is the latter; say so when it is.
+of it is the latter; say so when it is. When `ambient_background` is present, \
+cite that measurement instead of inferring breadth from path shapes — it is \
+the share of today's DNS sources that unrelated production nameservers also \
+saw. It does not track the grade, so never argue from it to a colour.
 - No recommendations to harden, patch or block unless the evidence supports a \
 specific, concrete change. This host is meant to be probed.
 
@@ -158,6 +161,52 @@ def _connect(db_path: Path) -> sqlite3.Connection:
 
 def _rows(conn: sqlite3.Connection, sql: str, args: tuple) -> list[dict]:
     return [dict(r) for r in conn.execute(sql, args)]
+
+
+AMBIENT_SQL = """
+WITH hc AS (
+    SELECT substr(ts,1,10) AS day, src_ip FROM hc.dns
+     WHERE src_ip IS NOT NULL AND event='query' GROUP BY 1,2
+),
+ns AS (SELECT day, src_ip FROM ns_queries GROUP BY 1,2)
+SELECT hc.day, COUNT(*) AS hc_sources, COUNT(ns.src_ip) AS also_seen_by_a_real_ns
+FROM hc LEFT JOIN ns ON ns.day = hc.day AND ns.src_ip = hc.src_ip
+GROUP BY hc.day
+"""
+
+
+def load_ambient(ns_db: Path, honeycow_db: Path) -> dict[str, dict]:
+    """Per-day: how many of honeycow's DNS sources a real nameserver also saw.
+
+    Best-effort by design. The nameserver index is a separate sensor on a
+    separate schedule; if it is missing, stale or unreadable the honeypot's
+    notes must still be written. Every failure returns {} silently — a note
+    without this is the status quo, and a crashed annotator is not.
+
+    WHY IT IS HERE. Almost every note ever written closes with some version of
+    "this is v4-wide sweeping, not aimed at us", inferred from path shapes and
+    user-agent strings. ns1-3 serve real zones, are advertised in .net and have
+    nothing to do with honeycow, so a source that hit both was demonstrably
+    sweeping. It does NOT discriminate the rubric's colours (measured: green
+    median 11.4%, yellow 12.9%, red 11.7%), which is exactly why it belongs in
+    the bundle and not in a rule.
+    """
+    if not ns_db.exists():
+        return {}
+    try:
+        import duckdb
+        con = duckdb.connect(str(ns_db), read_only=True)
+        try:
+            con.execute("INSTALL sqlite; LOAD sqlite;")
+            con.execute(f"ATTACH '{honeycow_db}' AS hc (TYPE SQLITE, READ_ONLY)")
+            rows = con.execute(AMBIENT_SQL).fetchall()
+        finally:
+            con.close()
+    except Exception as exc:  # noqa: BLE001 — never fatal to a note
+        print(f"annotate: ambient context unavailable ({exc})", file=sys.stderr)
+        return {}
+    return {d: {"honeycow_dns_sources": n, "also_seen_by_a_real_nameserver": ov,
+                "pct": round(100.0 * ov / n, 1) if n else None} for d, n, ov in rows}
 
 
 def _drop_ours(rows: list[dict], our_nets: list) -> list[dict]:
@@ -181,7 +230,8 @@ def _drop_ours(rows: list[dict], our_nets: list) -> list[dict]:
 
 
 def gather_evidence(conn: sqlite3.Connection, day: dict, prior: list[dict],
-                    our_nets: list | None = None) -> dict:
+                    our_nets: list | None = None,
+                    ambient: dict[str, dict] | None = None) -> dict:
     """Assemble the day's rows behind each fired rule, plus recurrence context.
 
     Deliberately wider than the day card: the card is what drove colour, this
@@ -222,6 +272,18 @@ def gather_evidence(conn: sqlite3.Connection, day: dict, prior: list[dict],
             "exploit_probes_counted": day["exploit"],
             "exploit_probes_raw": day["exploit_raw"],
             "exploit_distinct_path_scripts": day["exploit_kits"],
+            # Groups of sources the clustering judged to be one behaviour, with
+            # what each member sent and what the group was charged. Without this
+            # a note cannot tell "collapsed correctly, below threshold" from
+            # "the rule missed a pairing", and has guessed wrong.
+            "exploit_clone_groups": day.get("exploit_clusters", []),
+            "kit_similarity_threshold": RUBRIC["kit_similarity"],
+            # Operator-owned traffic already removed from every count above.
+            "our_own_traffic_excluded": {
+                "dns": day.get("self_dns", 0), "http": day.get("self_http", 0),
+                "note": ("our own hosts; never counted or graded. Do not "
+                         "speculate about these sources — they are us."),
+            },
             "exploit_families_counted": list(EXPLOIT_FAMILIES),
             "note": ("only the families listed above count toward the exploit "
                      "rule; env-harvest and other probe families do not. "
@@ -318,6 +380,17 @@ def gather_evidence(conn: sqlite3.Connection, day: dict, prior: list[dict],
             "http": p["http"], "dns_queries": p["dns_queries"],
         })
     ev["prior_non_green_days"] = ctx[-14:]
+
+    # Measured cross-sensor context, when the nameserver index is present.
+    if ambient and d in ambient:
+        ev["ambient_background"] = dict(
+            ambient[d],
+            note=("share of today's honeycow DNS sources that three unrelated "
+                  "production nameservers also saw. High means commodity "
+                  "sweeping, measured rather than inferred. Typical range "
+                  "10-50%; it does NOT track the rubric's colour, so do not "
+                  "treat it as evidence for or against the grade."),
+        )
     return ev
 
 
@@ -554,6 +627,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="ruminate taxonomy/ dir, used as context (optional)")
     ap.add_argument("--max-days", type=int, default=5,
                     help="cap API calls per run so a rebuild can't fan out")
+    ap.add_argument("--ns-db", type=Path, default=Path(os.environ.get("HONEYCOW_ANALYSIS_DIR",
+                                                Path.home() / "honeycow-analysis")) / "ns.duckdb",
+                    help="nameserver index for cross-sensor context (optional)")
     ap.add_argument("--our-ips-file", type=Path, default=Path("tools/our-ips.txt"),
                     help="operator-owned IPs/CIDRs; excluded from the evidence "
                          "bundle as well as from the grades")
@@ -569,6 +645,7 @@ def main(argv: list[str] | None = None) -> int:
 
     data = build(args.db, our_ips_file=args.our_ips_file)
     our_nets = load_our_ips(args.our_ips_file, [])
+    ambient = load_ambient(args.ns_db, args.db)
     pruned = prune_stale_notes(data, args.notes, args.dry_run, args.all_days)
     if pruned:
         print(f"{'[dry-run] would prune' if args.dry_run else 'pruned'} "
@@ -592,7 +669,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         for day in candidates:
             ev = gather_evidence(conn, day, data["days"][:by_date[day["date"]]],
-                                 our_nets)
+                                 our_nets, ambient)
             size = len(json.dumps(ev, default=str))
             print(f"[dry-run] would annotate {day['date']} {day['status'].upper()} "
                   f"via {args.model} — bundle {size / 1024:.1f} KB, "
@@ -621,7 +698,7 @@ def main(argv: list[str] | None = None) -> int:
     for day in candidates:
         try:
             ev = gather_evidence(conn, day, data["days"][:by_date[day["date"]]],
-                                 our_nets)
+                                 our_nets, ambient)
             text, usage, wrote_it = annotate_day(client, args.model, ev, cve_context)
             path = args.notes / f"{day['date']}.md"
             path.write_text(render_note(text, wrote_it, day["status"]))

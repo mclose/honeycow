@@ -495,3 +495,56 @@ def test_the_bundle_never_contains_our_own_traffic(tmp_path):
     assert any(r["src_ip"] == "9.9.9.9" for r in dirty["cve_trigger_queries"]), \
         "without the filter our own probes reach the model"
     assert clean["cve_trigger_queries"] == [], "with it, they do not"
+
+
+def test_clone_group_membership_travels_in_the_bundle(tmp_path):
+    """2026-05-19's note claimed kit_similarity had missed two IPs running an
+    identical 45-path script. It had collapsed them at Jaccard 1.000 and the
+    deduped total simply sat below threshold — but the bundle carried only the
+    group COUNT, so the note could not tell those two cases apart."""
+    kit = [f"/k{i}" for i in range(48)]
+    rows = _quiet(30)
+    rows["2026-03-31"] = {"dns": 10, "http": 10, "kits": [
+        {"src_ip": f"9.9.9.{n}", "paths": kit} for n in range(3)]}
+    db = _db(tmp_path, rows)
+    data = dash.build(db, our_ips_file=None)
+    day = next(d for d in data["days"] if d["date"] == "2026-03-31")
+    conn = ann._connect(db)
+    ri = ann.gather_evidence(conn, day, [])["rubric_inputs"]
+    conn.close()
+    groups = ri["exploit_clone_groups"]
+    assert len(groups) == 1, "three clones of one kit are one group"
+    assert groups[0]["sources"] == ["9.9.9.0", "9.9.9.1", "9.9.9.2"]
+    assert groups[0]["charged"] == 48, "charged once, at the loudest copy"
+    assert ri["kit_similarity_threshold"] == dash.RUBRIC["kit_similarity"]
+
+
+def test_excluded_self_traffic_is_declared_to_the_model(tmp_path):
+    """Silently removing rows invites the model to reason about a gap. Say so."""
+    rows = _quiet(10)
+    db = _db(tmp_path, rows)
+    ours = tmp_path / "our-ips.txt"
+    ours.write_text("5.5.5.0/24\n")
+    data = dash.build(db, our_ips_file=ours)
+    day = data["days"][-1]
+    conn = ann._connect(db)
+    ri = ann.gather_evidence(conn, day, [])["rubric_inputs"]
+    conn.close()
+    assert ri["our_own_traffic_excluded"]["http"] == day["self_http"]
+    assert "they are us" in ri["our_own_traffic_excluded"]["note"]
+
+
+def test_ambient_context_is_optional_and_never_fatal(tmp_path):
+    """The nameserver index is a separate sensor on its own schedule. A missing
+    or broken one must cost a note its cross-sensor line, never the note."""
+    assert ann.load_ambient(tmp_path / "absent.duckdb", tmp_path / "x.db") == {}
+    broken = tmp_path / "broken.duckdb"
+    broken.write_bytes(b"not a database")
+    assert ann.load_ambient(broken, tmp_path / "x.db") == {}
+
+    db = _db(tmp_path, _quiet(5))
+    data = dash.build(db, our_ips_file=None)
+    conn = ann._connect(db)
+    ev = ann.gather_evidence(conn, data["days"][-1], [], None, {})
+    conn.close()
+    assert "ambient_background" not in ev, "absent context adds no key"

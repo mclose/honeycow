@@ -548,3 +548,69 @@ def test_ambient_context_is_optional_and_never_fatal(tmp_path):
     ev = ann.gather_evidence(conn, data["days"][-1], [], None, {})
     conn.close()
     assert "ambient_background" not in ev, "absent context adds no key"
+
+
+def test_emit_bundles_makes_no_api_call_and_writes_the_real_prompt(tmp_path):
+    """The offline path must ask for exactly what the API path asks for, or the
+    two drift. The prompt is copied from the module constant, never retyped."""
+    db = _graded(tmp_path)
+    out = tmp_path / "bundles"
+    rc = ann.main(["--db", str(db), "--notes", str(tmp_path / "notes"),
+                   "--all-days", "--max-days", "50", "--emit-bundles", str(out)])
+    assert rc == 0
+    assert (out / "_prompt.txt").read_text() == ann.SYSTEM_PROMPT
+    manifest = json.loads((out / "_manifest.json").read_text())
+    assert manifest, "manifest names the days and their grades"
+    for date, status in manifest.items():
+        assert status in ("green", "yellow", "red")
+        assert (out / f"{date}.json").is_file()
+    assert not (tmp_path / "notes").exists(), "emitting must write no notes"
+
+
+def test_import_notes_stamps_the_same_provenance_as_the_api_path(tmp_path):
+    db = _graded(tmp_path)
+    out = tmp_path / "bundles"
+    notes = tmp_path / "notes"
+    ann.main(["--db", str(db), "--notes", str(notes), "--all-days",
+              "--max-days", "50", "--emit-bundles", str(out)])
+    date = sorted(json.loads((out / "_manifest.json").read_text()))[0]
+    (out / f"{date}.txt").write_text("Written offline in a session.")
+
+    assert ann.main(["--db", str(db), "--notes", str(notes),
+                     "--import-notes", str(out)]) == 0
+    note = (notes / f"{date}.md").read_text()
+    assert "Written offline in a session." in note
+    assert "source: model" in note
+    assert f"rubric: {ann.rubric_fingerprint()}" in note, "must carry the live fingerprint"
+    assert "written_by: session" in note, "and record which path wrote it"
+    # The dashboard must treat it as a model note like any other.
+    assert ann._is_model_note(notes / f"{date}.md")
+    assert ann._note_rubric(notes / f"{date}.md") == ann.rubric_fingerprint()
+
+
+def test_a_bundle_with_no_prose_is_skipped_not_blanked(tmp_path):
+    """A half-finished offline pass must not overwrite good notes with empty
+    ones — the missing days are named and left alone."""
+    db = _graded(tmp_path)
+    out = tmp_path / "bundles"
+    notes = tmp_path / "notes"
+    ann.main(["--db", str(db), "--notes", str(notes), "--all-days",
+              "--max-days", "50", "--emit-bundles", str(out)])
+    dates = sorted(json.loads((out / "_manifest.json").read_text()))
+    (out / f"{dates[0]}.txt").write_text("Only this one got written.")
+    (out / f"{dates[1]}.txt").write_text("   \n")  # whitespace only
+    assert ann.main(["--db", str(db), "--notes", str(notes),
+                     "--import-notes", str(out)]) == 0
+    assert (notes / f"{dates[0]}.md").is_file()
+    assert not (notes / f"{dates[1]}.md").exists(), "blank prose writes nothing"
+
+
+def test_day_accepts_a_comma_separated_list(tmp_path):
+    db = _graded(tmp_path)
+    data = dash.build(db, our_ips_file=None)
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    wanted = [d["date"] for d in data["days"] if not d["partial"]][:3]
+    got = {d["date"] for d in
+           ann.select_days(data, notes, False, ",".join(wanted), all_days=True)}
+    assert got == set(wanted)

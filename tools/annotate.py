@@ -539,8 +539,8 @@ def _is_model_note(path: Path) -> bool:
     return _frontmatter_field(path, "source") == "model"
 
 
-def select_days(data: dict, notes_dir: Path, force: bool, only: str | None,
-                all_days: bool = False) -> list[dict]:
+def select_days(data: dict, notes_dir: Path, force: bool,
+                only: str | set[str] | None, all_days: bool = False) -> list[dict]:
     """Settled, in scope, and either unwritten or written against a stale rubric.
 
     Retrospective by construction: `partial` excludes today, so the earliest
@@ -555,9 +555,11 @@ def select_days(data: dict, notes_dir: Path, force: bool, only: str | None,
     only a human sweep could find.
     """
     current = rubric_fingerprint()
+    if isinstance(only, str):
+        only = {d.strip() for d in only.split(",") if d.strip()}
     out = []
     for day in data["days"]:
-        if only and day["date"] != only:
+        if only and day["date"] not in only:
             continue
         if day["partial"] or (day["status"] == "green" and not all_days):
             continue
@@ -614,6 +616,90 @@ def prune_stale_notes(data: dict, notes_dir: Path, dry_run: bool,
     return dropped
 
 
+BUNDLE_README = """\
+Evidence bundles for offline annotation.
+
+`_prompt.txt` is the verbatim system prompt from tools/annotate.py — read it
+from here rather than paraphrasing, or the two paths drift. Each YYYY-MM-DD.json
+is one day's bundle. Write each day's prose to YYYY-MM-DD.txt in this directory,
+then:
+
+    tools/annotate.py --import-notes <this dir> --notes <notes dir>
+
+which stamps the provenance frontmatter the dashboard reads. Nothing here
+writes a note: an emitted bundle is inert until imported.
+"""
+
+
+def emit_bundles(out_dir: Path, days: list[dict], conn, all_days_ctx: list[dict],
+                 our_nets: list, ambient: dict) -> int:
+    """Dump bundles for offline annotation instead of calling the API.
+
+    WHY THIS EXISTS. The scheduled path has to be the API: it runs unattended
+    for weeks with no session. A one-off backfill after a `contract` bump has
+    neither constraint, and re-annotating the calendar four days at a time
+    leaves it holding mixed-vintage notes — the exact condition the fingerprint
+    exists to flag. This emits the same bundles the API path would send so an
+    interactive session can write them in one pass.
+
+    The prompt is copied from the module constant, never re-typed, so the two
+    paths cannot drift apart in what they ask for.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "_prompt.txt").write_text(SYSTEM_PROMPT)
+    (out_dir / "README.txt").write_text(BUNDLE_README)
+    by_date = {d["date"]: i for i, d in enumerate(all_days_ctx)}
+    manifest = {}
+    for day in days:
+        ev = gather_evidence(conn, day, all_days_ctx[:by_date[day["date"]]],
+                             our_nets, ambient)
+        (out_dir / f"{day['date']}.json").write_text(
+            json.dumps(ev, indent=1, sort_keys=True, default=str))
+        manifest[day["date"]] = day["status"]
+    (out_dir / "_manifest.json").write_text(json.dumps(manifest, indent=1, sort_keys=True))
+    print(f"emitted {len(days)} bundle(s) to {out_dir}", file=sys.stderr)
+    return 0
+
+
+def import_notes(in_dir: Path, notes_dir: Path, model: str, dry_run: bool) -> int:
+    """Turn offline-written prose into notes with correct provenance.
+
+    The frontmatter is written by `render_note`, the same function the API path
+    uses, so a note is stamped with the live rubric fingerprint and is
+    indistinguishable to the dashboard. `written_by` records the path, because
+    if the two ever do diverge in voice this is the only way to tell.
+    """
+    manifest_file = in_dir / "_manifest.json"
+    if not manifest_file.is_file():
+        print(f"import: no _manifest.json in {in_dir}", file=sys.stderr)
+        return 1
+    manifest = json.loads(manifest_file.read_text())
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    written, missing = [], []
+    for date, status in sorted(manifest.items()):
+        prose_file = in_dir / f"{date}.txt"
+        if not prose_file.is_file():
+            missing.append(date)
+            continue
+        text = prose_file.read_text().strip()
+        if not text:
+            missing.append(date)
+            continue
+        note = render_note(text, model, status).replace(
+            "source: model\n", "source: model\nwritten_by: session\n", 1)
+        if dry_run:
+            print(f"[dry-run] would write {notes_dir / (date + '.md')} "
+                  f"({len(text)} chars, {status})")
+        else:
+            (notes_dir / f"{date}.md").write_text(note)
+        written.append(date)
+    verb = "would import" if dry_run else "imported"
+    print(f"{verb} {len(written)} note(s)"
+          + (f"; {len(missing)} bundle(s) had no prose: {', '.join(missing[:5])}"
+             if missing else ""), file=sys.stderr)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     repo_root = Path(__file__).resolve().parent.parent
     ap = argparse.ArgumentParser(
@@ -637,11 +723,20 @@ def main(argv: list[str] | None = None) -> int:
                     default=os.environ.get("HONEYCOW_ANNOTATE_ALL") == "1",
                     help="annotate every settled day, green included "
                          "(default: non-green only). Env: HONEYCOW_ANNOTATE_ALL=1")
-    ap.add_argument("--day", help="annotate only this YYYY-MM-DD")
+    ap.add_argument("--day", help="annotate only these days (YYYY-MM-DD, comma-separated)")
     ap.add_argument("--force", action="store_true", help="rewrite existing notes")
+    ap.add_argument("--emit-bundles", type=Path, metavar="DIR",
+                    help="write evidence bundles for offline annotation and "
+                         "exit; makes no API call")
+    ap.add_argument("--import-notes", type=Path, metavar="DIR",
+                    help="turn offline-written prose in DIR into stamped notes")
     ap.add_argument("--dry-run", action="store_true",
                     help="show what would be written; no API call, no writes")
     args = ap.parse_args(argv)
+
+    if args.import_notes:
+        # Pure local file work — no index, no API, no network.
+        return import_notes(args.import_notes, args.notes, args.model, args.dry_run)
 
     data = build(args.db, our_ips_file=args.our_ips_file)
     our_nets = load_our_ips(args.our_ips_file, [])
@@ -663,6 +758,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     conn = _connect(args.db)
+    if args.emit_bundles:
+        rc = emit_bundles(args.emit_bundles, candidates, conn, data["days"],
+                          our_nets, ambient)
+        conn.close()
+        return rc
+
     by_date = {d["date"]: i for i, d in enumerate(data["days"])}
     cve_context = load_cve_context(args.taxonomy)
 

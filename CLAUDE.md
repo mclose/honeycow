@@ -221,7 +221,19 @@ cert via DNS-01 over BIND nsupdate). All three are required.
   and it `ATTACH`es honeycow.db read-only so cross-sensor joins need no
   migration. `duckdb` lives in `requirements-analysis.txt`, never the lock file.
   Idempotent by (host, day) partition replace plus a per-file size:mtime skip —
-  a re-run over unchanged logs is 0.45s.
+  a re-run over unchanged logs is 0.45s. A replaced day also pulls in that
+  day's rows from any *unchanged* file whose recorded day span reaches it
+  (`ns_files.min_day/max_day`): between rotations only `queries.log` changes,
+  and its first day is shared with `queries.log.0`. Without that the boundary
+  day silently lost up to two thirds of its rows.
+  **pdns-nyc2** (PowerDNS on a DO address, serving only the ECS test zone
+  `ecs.lab.deflationhollow.net`) is the fourth host. It logs to a journald
+  namespace, so its pull is `journalctl` from a cursor kept in
+  `<analysis>/ns/pdns-nyc2/.cursor`, written as one `pdns-queries.<UTC day>.log`
+  per day. PowerDNS logs no class (qclass is empty) and its `flags` column is
+  `do=N bufsize=N[ ecs=<subnet>]`, not BIND's `+E(0)DC`.
+  `refresh-index.sh` runs pull-ns + ingest-ns on the timer, non-fatally; until
+  2026-10-07 the sensor was refreshed by hand and sat weeks stale.
 - `tools/ns_ambient.py` — share of a day's honeycow sources that a real
   nameserver also saw. **Measured, and it does NOT discriminate the rubric's
   colours** (green median 11.4%, yellow 12.9%, red 11.7%; DNS-only 32.7% vs

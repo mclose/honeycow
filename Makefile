@@ -265,7 +265,7 @@ annotate:  ## Write model notes for settled days (DRY_RUN=1, DAY=, FORCE=1, ALL_
 		$(if $(DRY_RUN),--dry-run) $(if $(DAY),--day $(DAY)) $(if $(FORCE),--force) \
 		$(if $(ALL_DAYS),--all-days) $(if $(MAX_DAYS),--max-days $(MAX_DAYS))
 
-pull-ns:  ## Pull BIND query logs from ns1-3 to $(ANALYSIS_DIR)/ns (DRY_RUN=1)
+pull-ns:  ## Pull query logs from ns1-3 (BIND) + pdns-nyc2 (PowerDNS) to $(ANALYSIS_DIR)/ns (DRY_RUN=1)
 	@tools/pull-ns-logs.sh $(if $(DRY_RUN),--dry-run)
 
 ingest-ns:  ## Build the nameserver DuckDB index (DRY_RUN=1, REBUILD=1)
@@ -280,7 +280,7 @@ dashboard:  ## Render the daily-watch dashboard to $(DASH_DIR)/index.html
 	@tools/dashboard.py --db $(DB) --out $(DASH_DIR)/index.html \
 		$(if $(wildcard $(DASH_NOTES)),--notes $(DASH_NOTES))
 
-refresh:  ## pull + ingest + render dashboard (what the nightly timer runs; DRY_RUN=1 to preview)
+refresh:  ## pull + ingest (+ nameserver sensor) + annotate + render (what the timer runs; DRY_RUN=1 to preview)
 	@tools/refresh-index.sh $(if $(DRY_RUN),--dry-run)
 
 install-timer:  ## Install + enable the nightly refresh systemd *user* timer on this host

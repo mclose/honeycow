@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Build the nameserver query index from pulled BIND logs.
+"""Build the nameserver query index from pulled BIND and PowerDNS logs.
 
 Runs on the REPORT host. Reads `<analysis>/ns/<host>/queries.log*` (and the
-pre-true-up `named.log.*` syslog history) and writes a DuckDB table.
+pre-true-up `named.log.*` syslog history) from the BIND hosts, plus
+`pdns-queries.<day>.log` from the PowerDNS host, and writes a DuckDB table.
 
     tools/ingest_ns.py --dry-run
     tools/ingest_ns.py --db ~/honeycow-analysis/ns.duckdb
@@ -49,6 +50,15 @@ _BODY = re.compile(
     r"client @0x[0-9a-f]+ (?P<src>\S+?)#(?P<port>\d+) \((?P<asked>[^)]*)\): "
     r"query: (?P<qname>\S+) (?P<qclass>\S+) (?P<qtype>\S+)(?: (?P<flags>\S+))?"
 )
+# PowerDNS (pdns-nyc2), log-dns-queries=yes, pulled from journald as UTC
+# short-iso-precise, so the timestamp is the syslog shape above:
+#   ... pdns_server[773]: Remote 138.197.31.10<-8.8.8.0/24 wants 'split.ecs.lab...|A', do = 1, bufsize = 1232 (4096): packetcache MISS
+# `<-subnet` is the EDNS Client Subnet a resolver passed along; `(4096)` is the
+# client's advertised buffer when PowerDNS capped it. No class, no port.
+_PDNS_BODY = re.compile(
+    r"Remote (?P<src>[^\s<]+)(?:<-(?P<ecs>\S+))? wants '(?P<asked>.*)\|(?P<qtype>[^|']+)', "
+    r"do = (?P<do>\d), bufsize = (?P<buf>\d+)(?: \((?P<cbuf>\d+)\))?"
+)
 _FILE_TS = re.compile(r"^(\d{2})-([A-Z][a-z]{2})-(\d{4}) (\d{2}:\d{2}:\d{2})\.(\d{3})")
 _SYSLOG_TS = re.compile(r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}:\d{2}:\d{2})\.(\d+)")
 
@@ -75,7 +85,16 @@ def parse_line(line: str) -> tuple | None:
         day = f"{y}-{mo}-{d}"
     b = _BODY.search(line)
     if not b:
-        return None
+        p = _PDNS_BODY.search(line)
+        if not p:
+            return None
+        # BIND's flags column ("+E(0)DC") has no PowerDNS equivalent; carry
+        # the fields PowerDNS does log, in a form a LIKE/regexp can pick out.
+        flags = f"do={p['do']} bufsize={p['cbuf'] or p['buf']}"
+        if p["ecs"]:
+            flags += f" ecs={p['ecs']}"
+        return (f"{day}T{hms}.{frac[:3]}", day, p["src"], p["asked"],
+                p["asked"].rstrip(".").lower(), "", p["qtype"], flags)
     return (f"{day}T{hms}.{frac[:3]}", day, b["src"], b["asked"],
             b["qname"].rstrip(".").lower(), b["qclass"], b["qtype"],
             b["flags"] or "")
@@ -107,7 +126,8 @@ def log_files(root: Path, host: str) -> list[Path]:
         return []
     return sorted([p for p in d.iterdir()
                    if p.is_file() and (p.name.startswith("queries.log")
-                                       or p.name.startswith("named.log."))])
+                                       or p.name.startswith("named.log.")
+                                       or p.name.startswith("pdns-queries."))])
 
 
 def read_rows(paths: list[Path], host: str):
@@ -121,7 +141,7 @@ def read_rows(paths: list[Path], host: str):
         try:
             with opener(p, "rt", errors="replace") as f:
                 for line in f:
-                    if " query: " not in line:
+                    if " query: " not in line and " wants '" not in line:
                         continue  # responses/xfer/notify share these channels
                     row = parse_line(line)
                     if row:
@@ -170,7 +190,8 @@ def main(argv: list[str] | None = None) -> int:
                                    Path.home() / "honeycow-analysis"))
     ap.add_argument("--logs", type=Path, default=analysis / "ns")
     ap.add_argument("--db", type=Path, default=analysis / "ns.duckdb")
-    ap.add_argument("--hosts", default=os.environ.get("HONEYCOW_NS_HOSTS", "ns1 ns2 ns3"))
+    ap.add_argument("--hosts", default=os.environ.get("HONEYCOW_NS_HOSTS",
+                                                "ns1 ns2 ns3 pdns-nyc2"))
     ap.add_argument("--rebuild", action="store_true", help="drop and rebuild the table")
     ap.add_argument("--force", action="store_true",
                     help="re-read files even if unchanged since last ingest")

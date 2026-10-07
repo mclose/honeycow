@@ -32,6 +32,8 @@ if [ "$DRY_RUN" = 1 ]; then
     log "[dry-run] repo=$REPO_DIR data=$ANALYSIS_DIR"
     log "[dry-run] would run: make -C $REPO_DIR pull ANALYSIS_DIR=$ANALYSIS_DIR"
     log "[dry-run] would run: make -C $REPO_DIR ingest ANALYSIS_DIR=$ANALYSIS_DIR"
+    log "[dry-run] would run: make -C $REPO_DIR pull-ns ANALYSIS_DIR=$ANALYSIS_DIR"
+    log "[dry-run] would run: make -C $REPO_DIR ingest-ns ANALYSIS_DIR=$ANALYSIS_DIR"
     log "[dry-run] would run: make -C $REPO_DIR annotate ANALYSIS_DIR=$ANALYSIS_DIR"
     log "[dry-run] would run: make -C $REPO_DIR dashboard ANALYSIS_DIR=$ANALYSIS_DIR"
     # ingest's own --dry-run reports new-vs-existing without writing.
@@ -49,6 +51,17 @@ fi
 log "start  repo=$REPO_DIR data=$ANALYSIS_DIR"
 make -C "$REPO_DIR" pull   ANALYSIS_DIR="$ANALYSIS_DIR"
 make -C "$REPO_DIR" ingest ANALYSIS_DIR="$ANALYSIS_DIR"
+# The nameserver sensor (ns1-3 BIND, pdns-nyc2 PowerDNS). Ahead of annotate,
+# whose evidence bundle reads it for the "a real nameserver also saw this
+# source" fact. Non-fatal: it is a separate sensor, and a nameserver that is
+# down or unreachable must not cost the honeypot its dashboard. Before this
+# step existed the sensor was refreshed by hand and sat weeks stale.
+if make -C "$REPO_DIR" pull-ns ANALYSIS_DIR="$ANALYSIS_DIR"; then
+    make -C "$REPO_DIR" ingest-ns ANALYSIS_DIR="$ANALYSIS_DIR" \
+        || log "ingest-ns failed — nameserver index left as it was"
+else
+    log "pull-ns failed — nameserver index left as it was"
+fi
 # Interpret the settled days before rendering, so a new note lands on the page
 # in the same pass. Scope is non-green days unless HONEYCOW_ANNOTATE_ALL=1 is
 # set in the environment (the systemd unit sets it) — inherited through make.

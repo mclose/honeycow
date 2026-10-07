@@ -246,3 +246,29 @@ def test_force_reingests_an_unchanged_file_without_duplicating(tmp_path):
     con = duckdb.connect(str(db), read_only=True)
     assert con.execute("SELECT COUNT(*) FROM ns_queries").fetchone()[0] == 2
     con.close()
+
+
+def test_a_day_split_across_a_rotation_keeps_both_halves(tmp_path):
+    """Between rotations only queries.log changes, but its first day is shared
+    with the unchanged queries.log.0. Replacing that day from queries.log alone
+    used to drop queries.log.0's half of it (ns1 lost a third of 2026-09-24)."""
+    duckdb = pytest.importorskip("duckdb")
+    d = tmp_path / "logs" / "ns1"
+    d.mkdir(parents=True)
+    early = FILE_LINE.replace("07:40:56.791", "01:00:00.000")
+    late = FILE_LINE.replace("07:40:56.791", "23:00:00.000")
+    nextday = FILE_LINE.replace("24-Sep-2026", "25-Sep-2026")
+    (d / "queries.log.0").write_text(early + "\n" + early + "\n")
+    (d / "queries.log").write_text(late + "\n")
+    db = tmp_path / "ns.duckdb"
+    argv = ["--logs", str(tmp_path / "logs"), "--db", str(db), "--hosts", "ns1"]
+    assert ing.main(argv) == 0
+
+    # Only the live file grows; the rotated one is untouched.
+    (d / "queries.log").write_text(late + "\n" + nextday + "\n")
+    assert ing.main(argv) == 0
+    con = duckdb.connect(str(db), read_only=True)
+    per_day = dict(con.execute(
+        "SELECT day, COUNT(*) FROM ns_queries GROUP BY day").fetchall())
+    con.close()
+    assert per_day == {"2026-09-24": 3, "2026-09-25": 1}

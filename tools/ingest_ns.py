@@ -117,6 +117,11 @@ CREATE TABLE IF NOT EXISTS ns_files (
     name        VARCHAR,
     fingerprint VARCHAR   -- size:mtime, so a rotated file re-reads once
 );
+-- The days a file covers, so a partition replace can find the unchanged
+-- neighbour that shares its boundary day. NULL on rows from before this
+-- existed, which counts as "might overlap" and is filled in on first re-read.
+ALTER TABLE ns_files ADD COLUMN IF NOT EXISTS min_day VARCHAR;
+ALTER TABLE ns_files ADD COLUMN IF NOT EXISTS max_day VARCHAR;
 """
 
 
@@ -178,10 +183,40 @@ def seen(con, host: str, path: Path, force: bool) -> bool:
     return bool(row) and row[0] == _fingerprint(path)
 
 
-def remember(con, host: str, path: Path) -> None:
+def remember(con, host: str, path: Path, span: tuple[str, str] | None) -> None:
     con.execute("DELETE FROM ns_files WHERE host = ? AND name = ?", [host, path.name])
-    con.execute("INSERT INTO ns_files VALUES (?, ?, ?)",
-                [host, path.name, _fingerprint(path)])
+    # A file with no query lines (ns3's named.log.* hold only other channels)
+    # covers no day: "-" sorts below every date, so it is never a neighbour.
+    lo, hi = span or ("-", "-")
+    con.execute("INSERT INTO ns_files (host, name, fingerprint, min_day, max_day) "
+                "VALUES (?, ?, ?, ?, ?)", [host, path.name, _fingerprint(path), lo, hi])
+
+
+def stored_span(con, host: str, path: Path) -> tuple[str, str] | None:
+    row = con.execute("SELECT min_day, max_day FROM ns_files WHERE host = ? AND name = ?",
+                      [host, path.name]).fetchone()
+    return (row[0], row[1]) if row and row[0] else None
+
+
+def _copy_rows(path: Path, host: str, w, only: set[str] | None, counts: list[int],
+               seen_days: set[str] | None = None):
+    """Write one file's rows to the CSV writer -> (min_day, max_day) or None.
+
+    `only` limits what is written (a neighbour contributes only the days being
+    replaced); the span returned always covers the whole file. Days written
+    are added to `seen_days`."""
+    lo = hi = None
+    for row in read_rows([path], host):
+        day = row[2]
+        lo = day if lo is None or day < lo else lo
+        hi = day if hi is None or day > hi else hi
+        if only is None or day in only:
+            w.writerow(row)
+            counts[0] += 1
+            if seen_days is not None:
+                seen_days.add(day)
+    counts[1] += read_rows.stats.get(host, (0, 0))[1]
+    return (lo, hi) if lo else None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -251,13 +286,32 @@ def main(argv: list[str] | None = None) -> int:
         # after 19 minutes, where writing the CSV took 30s and `read_csv`
         # ingested it in 15s. Feeding a columnar engine one row at a time
         # throws away the only thing it is good at.
+        #
+        # NEIGHBOURS. The partition replace below deletes every (host, day) the
+        # input touches, so the input must hold ALL of each such day. Between
+        # BIND rotations only queries.log changes, and its first day is shared
+        # with queries.log.0, which has not changed and so is not fresh. Without
+        # the second pass that day kept only queries.log's part: measured
+        # 2026-10-07, ns1 had 23,474 of 34,829 rows for 09-24, ns2 15,369 of
+        # 43,525 for 08-01. So unchanged files whose span reaches a replaced
+        # day contribute that day's rows (and only those) too.
+        counts = [0, 0]  # rows written, lines unparsed
+        spans: dict[Path, tuple[str, str] | None] = {}
         with tempfile.NamedTemporaryFile("w", suffix=".csv", newline="",
                                          delete=False) as fh:
             scratch = Path(fh.name)
             w = csv.writer(fh)
-            for row in read_rows(fresh, host):
-                w.writerow(row)
-        good, bad = read_rows.stats.get(host, (0, 0))
+            days: set[str] = set()
+            for q in fresh:
+                spans[q] = _copy_rows(q, host, w, None, counts, days)
+            for q in paths:
+                if q in spans:
+                    continue
+                s = stored_span(con, host, q)
+                if s is None or any(s[0] <= d <= s[1] for d in days):
+                    spans[q] = _copy_rows(q, host, w, days, counts)
+        bad = counts[1]
+        neighbours = len(spans) - len(fresh)
         try:
             con.execute("BEGIN")
             con.execute(
@@ -274,15 +328,16 @@ def main(argv: list[str] | None = None) -> int:
             con.execute("DELETE FROM ns_queries WHERE host = ? AND day IN "
                         "(SELECT DISTINCT day FROM staging)", [host])
             con.execute("INSERT INTO ns_queries SELECT * FROM staging")
-            for q in fresh:
-                remember(con, host, q)
+            for q, s in spans.items():
+                remember(con, host, q, s)
             con.execute("COMMIT")
         finally:
             scratch.unlink(missing_ok=True)
         written += stats[0]
         print(f"ingest-ns: {host}: {stats[0]:,} queries over {stats[1]} days "
               f"({stats[2]} .. {stats[3]}), {bad:,} unparsed, "
-              f"{len(fresh)}/{len(paths)} file(s) read", file=sys.stderr)
+              f"{len(fresh)}/{len(paths)} file(s) changed, "
+              f"{neighbours} neighbour(s) re-read for shared days", file=sys.stderr)
 
     n = con.execute("SELECT COUNT(*) FROM ns_queries").fetchone()[0]
     con.execute("CHECKPOINT")

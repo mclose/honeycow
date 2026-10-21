@@ -272,3 +272,27 @@ def test_a_day_split_across_a_rotation_keeps_both_halves(tmp_path):
         "SELECT day, COUNT(*) FROM ns_queries GROUP BY day").fetchall())
     con.close()
     assert per_day == {"2026-09-24": 3, "2026-09-25": 1}
+
+
+# Real, ns1 2026-10-19: a mistyped dig from claude asked for the name "A,AAAA".
+COMMA_LINE = (
+    "19-Oct-2026 16:06:02.645 queries: info: client @0x768db0587c00 "
+    "2a02:4780:4:7323::1#37998 (A,AAAA): query: A,AAAA IN A -E(0)DK "
+    "(2001:19f0:6402:f91:5400:5ff:fecb:48e0)"
+)
+
+
+def test_a_qname_with_a_comma_past_the_sniff_sample_still_ingests(tmp_path):
+    """The scratch CSV is quoted only where a field needs it. DuckDB's sniffer
+    reads ~20k rows, saw no quotes, decided there was no quote character and
+    split "A,AAAA" into two columns, failing every timer run from 10-19 on.
+    The bad row must sit past the sample or this test proves nothing."""
+    duckdb = pytest.importorskip("duckdb")
+    logs = _write_log(tmp_path / "logs", "ns1", [FILE_LINE] * 25_000 + [COMMA_LINE])
+    db = tmp_path / "ns.duckdb"
+    assert ing.main(["--logs", str(logs), "--db", str(db), "--hosts", "ns1"]) == 0
+    con = duckdb.connect(str(db), read_only=True)
+    names = con.execute(
+        "SELECT asked, qname FROM ns_queries WHERE day = '2026-10-19'").fetchall()
+    con.close()
+    assert names == [("A,AAAA", "a,aaaa")]

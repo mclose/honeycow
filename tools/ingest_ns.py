@@ -312,11 +312,16 @@ def main(argv: list[str] | None = None) -> int:
                     spans[q] = _copy_rows(q, host, w, days, counts)
         bad = counts[1]
         neighbours = len(spans) - len(fresh)
+        # DIALECT IS PINNED, not sniffed. csv.writer quotes a field only when
+        # it must, and the sniffer samples the head of the file: a qname with
+        # a comma past that sample ("A,AAAA", a mistyped dig from claude,
+        # ns1 2026-10-19) read as 10 columns and failed every run for days.
         try:
             con.execute("BEGIN")
             con.execute(
                 "CREATE OR REPLACE TEMP TABLE staging AS SELECT * FROM "
-                f"read_csv('{scratch}', columns={COLUMNS}, header=false)")
+                f"read_csv('{scratch}', columns={COLUMNS}, header=false, "
+                "delim=',', quote='\"', escape='\"')")
             stats = con.execute(
                 "SELECT COUNT(*), COUNT(DISTINCT day), MIN(day), MAX(day) FROM staging"
             ).fetchone()

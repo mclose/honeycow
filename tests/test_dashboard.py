@@ -39,11 +39,12 @@ def _db(tmp_path, rows_by_day, ufw_days=()):
                 sec = int(i * b.get("span", 10) / max(b["n"] - 1, 1))
                 dns.append((f"burst-{day}-{b_i}-{i}",
                             f"{day}T11:00:{sec:02d}+00:00", 0, None, "udp",
-                            b["src_ip"], b.get("src_port", 29852), None, 38, "query",
+                            b["src_ip"], b.get("src_port", 29852), None,
+                            b.get("raw_len", 38), "query",
                             b.get("decision", "respond"), "synth_txt", None, 0, 1.0,
                             b.get("dns_id", 32058), "QUERY", "NOERROR", 256, 1,
                             "cam.ac.uk.", "TXT", 16, "IN", 1, "NOERROR", 1, 0, 0,
-                            293, 0, None, None, None, None, "other"))
+                            b.get("resp", 293), 0, None, None, None, None, "other"))
 
         # Exploit-family probes with explicit per-source path lists, so a test
         # can express "N sources running the same script" vs "N behaviours".
@@ -255,6 +256,26 @@ def test_frozen_txid_and_port_burst_is_red(tmp_path):
     assert any("163.5.59.20" in w for w in hot["why"])
     # every other day is untouched
     assert {d["status"] for d in data["days"] if d["date"] != "2026-03-05"} == {"green"}
+
+
+def test_answered_burst_without_amplification_is_yellow_not_red(tmp_path):
+    """2026-10-29's shape: enlisted in a DNSKEY campaign, but 31 B in -> 83 B
+    out. We were a reflector, not an amplifier; the defenses held."""
+    data = dash.build(_db(tmp_path, _burst_days("2026-03-05", n=60,
+                                                raw_len=31, resp=83)))
+    hot = next(d for d in data["days"] if d["date"] == "2026-03-05")
+    assert hot["status"] == "yellow"
+    assert any("2.68x" in w and "defenses held" in w for w in hot["why"])
+
+
+def test_low_amp_burst_is_red_once_it_emits_enough_bytes(tmp_path):
+    """Low amplification at real volume is still a reflector doing harm."""
+    n = dash.RUBRIC["reflection_bytes_red"] // 83 + 1
+    data = dash.build(_db(tmp_path, _burst_days("2026-03-05", n=n, span=50,
+                                                raw_len=31, resp=83)))
+    hot = next(d for d in data["days"] if d["date"] == "2026-03-05")
+    assert hot["status"] == "red"
+    assert any("functioned as an amplifier" in w for w in hot["why"])
 
 
 def test_ordinary_retries_share_a_tuple_but_stay_green(tmp_path):

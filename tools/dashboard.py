@@ -124,6 +124,16 @@ RUBRIC = {
     # line belongs.
     "reflection_burst_min_packets": 20,
     "reflection_burst_red": 1,
+    # An ANSWERED burst is only red when honeycow actually amplified: any
+    # burst at or above this bytes-out/bytes-in ratio, or the day's answered
+    # bursts emitting this much in total. Below both it is yellow — we were
+    # enlisted, the no-EDNS / 512-byte design held. Measured, not guessed: the
+    # 2026-10-29 DNSKEY campaign (13 victims, 948 queries, every one at 2.68x,
+    # ~77 KB total) and 2026-06-14 (ANY, 1.27x, 3 KB) painted red under the
+    # packet floor alone; the one real reflector, 2026-08-03, was 7.71x and
+    # 238 KB. Nothing ever measured sits between 2.68x and 7.71x.
+    "reflection_amp_red": 4.0,
+    "reflection_bytes_red": 100 * 1024,
     # A burst of never-before-seen sources suggests a new campaign found us.
     "new_source_spike_yellow": 4.0,
 }
@@ -218,11 +228,23 @@ def grade_day(day: dict, baseline: dict) -> tuple[str, list[str]]:
     answered = [b for b in day["reflection_bursts"] if b["answered"]]
     refused = [b for b in day["reflection_bursts"] if not b["answered"]]
     if len(answered) >= RUBRIC["reflection_burst_red"]:
-        status = _worst(status, "red")
+        total_out = sum(b["out_bytes"] for b in answered)
+        peak_amp = max(b["amp"] for b in answered)
+        amplified = (peak_amp >= RUBRIC["reflection_amp_red"]
+                     or total_out >= RUBRIC["reflection_bytes_red"])
+        status = _worst(status, "red" if amplified else "yellow")
+        why.append(
+            f"{len(answered)} answered reflection-shaped burst(s), "
+            f"{total_out / 1024:.0f} KB emitted in total, peak amplification "
+            f"{peak_amp:.2f}x — "
+            + ("honeycow functioned as an amplifier" if amplified else
+               f"enlisted as a reflector but under the {RUBRIC['reflection_amp_red']:.0f}x / "
+               f"{RUBRIC['reflection_bytes_red'] // 1024} KB red line; the defenses held")
+        )
     for b in (answered + refused)[:3]:
         rate = f", {b['n'] / b['span_s']:.0f}/s" if b["span_s"] >= 1 else ""
         verb = "answered" if b["answered"] else "REFUSED"
-        emitted = (f", {b['out_bytes'] / 1024:.0f} KB emitted"
+        emitted = (f", {b['out_bytes'] / 1024:.0f} KB emitted at {b['amp']:.2f}x"
                    if b["answered"] and b["out_bytes"] else "")
         why.append(
             f"{b['n']} {verb} {b['qtype'] or '?'} queries from {b['src_ip']} sharing one "
@@ -434,6 +456,7 @@ def build(db_path: Path, notes_dir: Path | None = None,
         "SELECT substr(ts,1,10) d, src_ip, dns_id, src_port, qtype, COUNT(*) n, "
         "SUM(CASE WHEN decision='respond' THEN 1 ELSE 0 END) answered, "
         "SUM(COALESCE(response_bytes,0)) out_bytes, "
+        "SUM(COALESCE(raw_len,0)) in_bytes, "
         "(julianday(MAX(ts)) - julianday(MIN(ts))) * 86400.0 span_s "
         "FROM dns WHERE event='query' AND src_ip IS NOT NULL AND dns_id IS NOT NULL "
         "GROUP BY d, src_ip, dns_id, src_port HAVING COUNT(*) >= ?",
@@ -445,6 +468,8 @@ def build(db_path: Path, notes_dir: Path | None = None,
         slot(r["d"])["reflection_bursts"].append({
             "src_ip": r["src_ip"], "qtype": r["qtype"], "n": r["n"],
             "answered": bool(r["answered"]), "out_bytes": r["out_bytes"] or 0,
+            # bytes emitted per byte received across the group; 0 if sizes unknown
+            "amp": (r["out_bytes"] or 0) / r["in_bytes"] if r["in_bytes"] else 0.0,
             "span_s": r["span_s"] or 0.0,
         })
 

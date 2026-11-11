@@ -94,7 +94,15 @@ cert via DNS-01 over BIND nsupdate). All three are required.
   `-maxdepth 1`, so a pcap promoted into `keep/` is held indefinitely. That
   is the escape hatch that makes 14-day retention safe: when the morning
   report finds something worth the raw bytes, copy that hour in before it
-  ages out. Keep the set small and deliberate — it is the only pcap data
+  ages out. Keeps are stored as `.pcap.gz` (`promote_pcaps` gzips on copy;
+  a flood hour is one closer page repeated ~12K times and shrinks ~24x).
+  `tcpdump -r` reads `.gz` directly. Anything that lists keep/ must treat
+  `x.pcap.gz` as `x.pcap` or it will re-promote what is already held.
+- **tcpdump's `-i any` triples every packet** (eth0, docker bridge, veth).
+  The capture filter keeps eth0's copy plus container<->container traffic —
+  the caddy -> honey-ns:80 leg is the *only* plaintext of HTTPS, which is why
+  the fix is a BPF filter and not `-i eth0`. Pcaps from before 2026-11-11
+  are still tripled; count packets accordingly. zeek is also `-i any`. Keep the set small and deliberate — it is the only pcap data
   worth backing up. (`backup-prep.sh` on the VPS deliberately excludes the
   rotating pcaps; it stages `honeycow_logs`, zeek, caddy/acme and `/etc`.)
 - **Caddy + acme are mandatory, not opt-in.** honeycow.net needs HTTPS

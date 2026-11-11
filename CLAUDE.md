@@ -239,9 +239,33 @@ cert via DNS-01 over BIND nsupdate). All three are required.
   colours** (green median 11.4%, yellow 12.9%, red 11.7%; DNS-only 32.7% vs
   33.3%). It is a fact for the annotator's evidence bundle, not a grading
   input. See [[ns-sensor-findings]].
-- `tools/refresh-index.sh` — pull + ingest + annotate + render, under a
-  lockfile. What the systemd timer runs (`deploy/systemd/`). The annotate step
-  is non-fatal: a failed API call must still leave a rendered dashboard.
+- `tools/refresh-index.sh` — pull + ingest + annotate + promote-pcaps + render
+  + notify, under a lockfile. What the systemd timer runs (`deploy/systemd/`).
+  Every step after ingest is non-fatal: a failed API call must still leave a
+  rendered dashboard.
+
+## Unattended jobs (the operator checks in every few weeks, not daily)
+
+All share `tools/ops.py`: each writes `<analysis>/state/<job>.json` (`ok`,
+`last_run`, what changed) and anything needing a human is **pushed** via
+herdmail/ntfy, never queued. `tools/notify.py` computes health from those files.
+
+| Job | When | What it does unattended |
+|---|---|---|
+| `refresh-index` | 4-hourly timer | pull/ingest/annotate/dashboard, then the two below |
+| `promote_pcaps` | each refresh | copies pcap hours behind reflection bursts, non-research oversized QR=1 and CVE-2026-5946 triggers into `/pcaps/keep/` before the 14-day prune. Keyed on signals, not colour — a colour can be regraded, bytes can't come back |
+| `notify` | each refresh | pushes each newly settled yellow/red day once; pipeline problems on change + weekly; Monday digest. Replaced the weekday "Run the Morning Report" cron nag |
+| `scanner_refresh` | Tue 07:30 CT timer | adds research ranges to `config/source_exemptions.txt` from upstream lists **and from self-identification in our data** (research qnames, 957-byte QR=1 probe, research UAs) attributed by RDAP against an org allowlist. Branch → PR → required CI → merge → push `origin/main` to prod → verifies the live process loaded the new count. Private worktree under `state/`, so the operator's checkout is never switched. Additions only; cap 20/run, no prefix wider than /16 v4 or /32 v6 — tripping a guard holds the run and pushes |
+| ruminate | Mon 08:00 CT cron (separate repo) | CVE intake + auto-promotion; `notify` reads its log for health |
+
+Operator authorised auto-merge + auto-deploy for `scanner_refresh` on
+2026-11-11, scoped to that file. Widening what an unattended job may ship
+is his call again, not an extension of that one.
+
+**Note-fingerprint gotcha:** *adding* a key to `RUBRIC` changes its hash just
+like moving a threshold does, so every note goes stale and re-annotates
+(~$0.10/day x the whole calendar, draining at `--max-days` per run). Not
+bumping `contract` does not avoid that cost.
 
 ## Analysis pipeline (runs on claude, NOT the honeypot)
 

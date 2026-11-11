@@ -35,7 +35,9 @@ if [ "$DRY_RUN" = 1 ]; then
     log "[dry-run] would run: make -C $REPO_DIR pull-ns ANALYSIS_DIR=$ANALYSIS_DIR"
     log "[dry-run] would run: make -C $REPO_DIR ingest-ns ANALYSIS_DIR=$ANALYSIS_DIR"
     log "[dry-run] would run: make -C $REPO_DIR annotate ANALYSIS_DIR=$ANALYSIS_DIR"
+    log "[dry-run] would run: make -C $REPO_DIR promote-pcaps ANALYSIS_DIR=$ANALYSIS_DIR"
     log "[dry-run] would run: make -C $REPO_DIR dashboard ANALYSIS_DIR=$ANALYSIS_DIR"
+    log "[dry-run] would run: make -C $REPO_DIR notify ANALYSIS_DIR=$ANALYSIS_DIR"
     # ingest's own --dry-run reports new-vs-existing without writing.
     make -C "$REPO_DIR" ingest ANALYSIS_DIR="$ANALYSIS_DIR" DRY_RUN=1 || true
     exit 0
@@ -72,5 +74,13 @@ make -C "$REPO_DIR" annotate ANALYSIS_DIR="$ANALYSIS_DIR" \
     || log "annotate failed — see $ANALYSIS_DIR/notes/_status.json"
 # Render straight into the directory caddy-claude serves. No copy step: the
 # SQLite index and the web server are both on this host.
+# Raw bytes behind rare events are pruned at 14 days; save them while they
+# exist. Non-fatal: a VPS hiccup must not cost the dashboard.
+make -C "$REPO_DIR" promote-pcaps ANALYSIS_DIR="$ANALYSIS_DIR" \
+    || log "promote-pcaps failed — see $ANALYSIS_DIR/state/pcap_promote.json"
 make -C "$REPO_DIR" dashboard ANALYSIS_DIR="$ANALYSIS_DIR"
+# Last, so it reports on everything above. Pushes only when there is
+# something; health is computed from the status files, not remembered.
+make -C "$REPO_DIR" notify ANALYSIS_DIR="$ANALYSIS_DIR" \
+    || log "notify failed"
 log "done"

@@ -1,0 +1,12 @@
+# Tuesday 07:30 Chicago: the day after ruminate's Monday CVE scan, and early
+# enough that a push about a held or failed run lands at the start of a day.
+[Unit]
+Description=HoneyCow: weekly research-scanner range refresh
+
+[Timer]
+OnCalendar=Tue *-*-* 07:30:00 America/Chicago
+RandomizedDelaySec=900
+Persistent=true
+
+[Install]
+WantedBy=timers.target

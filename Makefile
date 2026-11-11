@@ -275,6 +275,21 @@ ingest-ns:  ## Build the nameserver DuckDB index (DRY_RUN=1, REBUILD=1)
 ambient:  ## Per-day share of honeycow sources a real nameserver also saw
 	@$(PY) tools/ns_ambient.py --db $(NS_DB) --honeycow-db $(DB) $(if $(JSON),--json)
 
+# --- unattended jobs (see tools/ops.py for the shared status/push contract) ---
+# State + status files live in $(ANALYSIS_DIR)/state; health is computed from
+# them by `notify`, so a job that stops running is reported, not forgotten.
+promote-pcaps:  ## Copy pcap hours behind rare events into /pcaps/keep on $(VPS_HOST) (DRY_RUN=1)
+	@HONEYCOW_ANALYSIS_DIR=$(ANALYSIS_DIR) VPS_HOST=$(VPS_HOST) $(PY) -m tools.promote_pcaps \
+		--db $(DB) $(if $(DRY_RUN),--dry-run)
+
+notify:  ## Push non-green days, pipeline health, and the Monday digest via ntfy (DRY_RUN=1)
+	@HONEYCOW_ANALYSIS_DIR=$(ANALYSIS_DIR) $(PY) -m tools.notify --db $(DB) \
+		--notes $(DASH_NOTES) $(if $(DRY_RUN),--dry-run)
+
+scanner-refresh:  ## Weekly: add research-scanner ranges, PR, merge on CI, deploy (DRY_RUN=1, NO_DEPLOY=1)
+	@HONEYCOW_ANALYSIS_DIR=$(ANALYSIS_DIR) VPS_HOST=$(VPS_HOST) $(PY) -m tools.scanner_refresh \
+		--db $(DB) $(if $(DRY_RUN),--dry-run) $(if $(NO_DEPLOY),--no-deploy)
+
 dashboard:  ## Render the daily-watch dashboard to $(DASH_DIR)/index.html
 	@mkdir -p $(DASH_DIR)
 	@tools/dashboard.py --db $(DB) --out $(DASH_DIR)/index.html \

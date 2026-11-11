@@ -1,0 +1,26 @@
+# HoneyCow: weekly research-scanner range refresh (tools/scanner_refresh.py).
+# Runs on the REPORT host (claude). Adds ranges to config/source_exemptions.txt
+# through the normal gate — branch, PR, required CI, merge — then pushes
+# origin/main to the prod remote. All git work is in a private worktree under
+# $HONEYCOW_ANALYSIS_DIR/state, so the operator's checkout is never touched.
+#
+#   cp deploy/systemd/honeycow-scanner-refresh.{service,timer} ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now honeycow-scanner-refresh.timer
+#
+# Needs, non-interactively: ssh to github + the honeycow VPS, and `gh` auth —
+# the same credentials honeycow-index.service already uses for its pulls.
+[Unit]
+Description=HoneyCow: weekly research-scanner range refresh
+Documentation=file:%h/projects/honeycow/tools/scanner_refresh.py
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/honeycow
+Environment=HONEYCOW_ANALYSIS_DIR=%h/honeycow-analysis
+ExecStart=/usr/bin/make -C %h/projects/honeycow scanner-refresh
+Nice=10
+# CI wait (25 min) + prod rebuild + verification
+TimeoutStartSec=3600

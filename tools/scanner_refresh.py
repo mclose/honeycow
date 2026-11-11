@@ -317,7 +317,9 @@ def worktree(repo: Path) -> Path:
 
 
 def ship(repo: Path, wt: Path, new_text: str, adds: list[Addition], day: str,
-         deploy: bool, vps: str, expected: int) -> dict:
+         deploy: bool, vps: str, expected: int, out: dict) -> None:
+    """Records progress into `out` as it goes, so a late failure (say, prod
+    verification) still leaves the PR link and merge state in the status."""
     branch = f"auto/scanner-ranges-{day}"
     (wt / EXEMPTIONS_REL).write_text(new_text)
     run(["git", "checkout", "-q", "-B", branch], wt)
@@ -333,7 +335,7 @@ def ship(repo: Path, wt: Path, new_text: str, adds: list[Addition], day: str,
                          f"{listing}\n\nAdditions only. Merged by the job once the "
                          f"required `check` passes; then deployed."], wt)
     pr = url.rsplit("/", 1)[-1]
-    out = {"pr": url}
+    out["pr"] = url
     time.sleep(20)  # let the required check register before watching it
     run(["gh", "pr", "checks", pr, "--watch", "--required", "--interval", "30"], wt,
         timeout=CI_TIMEOUT_S)
@@ -346,24 +348,50 @@ def ship(repo: Path, wt: Path, new_text: str, adds: list[Addition], day: str,
     subprocess.run(["git", "push", "-q", "origin", "--delete", branch], cwd=wt,
                    capture_output=True, timeout=120)
     if not deploy:
-        return out
+        return
     run(["git", "fetch", "-q", "origin", "main"], repo)
     run(["git", "push", "-q", "prod", "origin/main:main"], repo, timeout=900)
     out["deployed"] = True
     out["prod_entries"] = verify_prod(vps, expected)
     out["local_checkout"] = fast_forward_local(repo)
-    return out
+
+
+# Either line proves the running process holds the list: a fresh start logs
+# the first, a SIGHUP reload the second.
+_LOADED_RX = re.compile(r"source exemptions: (\d+) entries|"
+                        r"source exemption list reloaded: \d+ -> (\d+)")
+
+
+def loaded_count(log_text: str) -> int | None:
+    """The most recent entry count the honeypot reported loading."""
+    hits = _LOADED_RX.findall(log_text)
+    if not hits:
+        return None
+    a, b = hits[-1]
+    return int(a or b)
 
 
 def verify_prod(vps: str, expected: int) -> int:
-    """Exercise, don't read back: the running process logs what it loaded."""
-    for _ in range(12):
+    """Exercise, don't read back: make the running process reload, then read
+    what IT says it loaded.
+
+    The SIGHUP is required, not belt-and-braces. `up-prod` only recreates the
+    container when the image changes, and this file arrives through the
+    config/ directory bind mount — so a list-only deploy updates the file on
+    disk and the process keeps the old list until signalled. The first live
+    run (2026-11-11) shipped, merged, deployed, and still served 169 entries.
+    """
+    for attempt in range(12):
+        if attempt % 4 == 0:  # (re)signal: the container may still be starting
+            subprocess.run(["ssh", "-o", "BatchMode=yes", vps,
+                            "docker kill -s HUP honeycow >/dev/null"],
+                           capture_output=True, text=True, timeout=60)
+            time.sleep(3)
         r = subprocess.run(
             ["ssh", "-o", "BatchMode=yes", vps,
-             "docker logs --since 20m honeycow 2>&1 | grep 'source exemptions:' | tail -1"],
+             "docker logs --since 30m honeycow 2>&1 | grep 'source exemption' | tail -5"],
             capture_output=True, text=True, timeout=60)
-        m = re.search(r"source exemptions: (\d+) entries", r.stdout)
-        if m and int(m.group(1)) == expected:
+        if loaded_count(r.stdout) == expected:
             return expected
         time.sleep(15)
     raise RuntimeError(f"prod did not report {expected} source exemptions after deploy")
@@ -433,8 +461,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         new_text = render(old_text, adds, day)
         expected = validate(new_text, old_text, len(adds))
-        status.update(ship(repo, wt, new_text, adds, day, not args.no_deploy,
-                           args.vps, expected))
+        ship(repo, wt, new_text, adds, day, not args.no_deploy, args.vps, expected,
+             status)
         status["ok"] = True
         ops.push(f"HoneyCow: {len(adds)} scanner range(s) added"
                  + (" + deployed" if status.get("deployed") else ""),

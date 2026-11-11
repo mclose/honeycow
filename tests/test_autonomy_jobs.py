@@ -159,3 +159,11 @@ def test_day_message_skips_a_stale_note():
          "narrative": {"text": "**Red today**", "stale": True}}
     _, body = notify.day_message(d, None)
     assert "Note" not in body and "a reason" in body
+
+
+def test_prod_verification_reads_both_startup_and_sighup_reload_lines():
+    start = '{"msg":\'source exemptions: 169 entries from /etc/honeycow/x\'}'
+    hup = '{"msg":\'source exemption list reloaded: 169 -> 172\'}'
+    assert sr.loaded_count(start) == 169
+    assert sr.loaded_count(start + "\n" + hup) == 172  # most recent wins
+    assert sr.loaded_count("nothing") is None

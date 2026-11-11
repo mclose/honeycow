@@ -122,6 +122,11 @@
 74.82.47.56/30
 74.82.47.60/31
 74.82.47.62/32
+# Shadowserver's own ARIN allocation (NET 199.165.159.0/24, registered
+# 2026-07-02) — newer than the MISP list above. Runs the same probe set
+# (dnsscan.shadowserver.org, CH version.bind, the 957-byte QR=1 packet from
+# port 53). Missing it painted 2026-11-05/08/10 red as "reflection victim".
+199.165.159.0/24
 
 
 # --- Censys ----------------------------------------------------------------

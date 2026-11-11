@@ -170,7 +170,18 @@ services:
       - -U
       - -w
       - /pcaps/honeycow-%Y%m%d-%H%M.pcap
-      - port 53 or port 80 or port 443
+      # `-i any` sees every external packet three times: on eth0, on the
+      # docker bridge and on the container's veth (the last two already
+      # DNAT'd to 172.18/fd00:beef). Keep eth0's copy -- public addresses on
+      # both ends, the real wire -- plus the container<->container legs,
+      # which are the ONLY plaintext view of HTTPS (caddy -> honey-ns:80).
+      # Measured on a live hour: 35.0K -> 11.9K packets, nothing unique lost.
+      # Not `-i eth0`: that would drop the caddy -> honey-ns leg.
+      - >-
+        (port 53 or port 80 or port 443) and
+        ((not net 172.16.0.0/12 and not net fc00::/7) or
+        (src net 172.16.0.0/12 and dst net 172.16.0.0/12) or
+        (src net fc00::/7 and dst net fc00::/7))
     volumes:
       - honeycow_pcaps:/pcaps
 
@@ -204,7 +215,8 @@ services:
   #
   # The retention asymmetry is deliberate. Zeek keeps the structured
   # interpretation cheaply (~150 MB at 7d); pcaps keep the raw bytes
-  # expensively (~200 MB/day, so ~2.8 GB at 14d). 14 days is sized to the
+  # expensively (~200 MB/day before the 2026-11 dedup filter on
+  # tcpdump, ~1/3 of that after; ~2.8 GB at 14d before). 14 days is sized to the
   # analysis cadence, not to tidiness: anything the daily-watch dashboard
   # grades non-green should still have raw packets behind it by the time a
   # human gets round to reading the report.
@@ -213,6 +225,7 @@ services:
   # hour's pcap there to hold it indefinitely when the morning report turns
   # up something worth keeping the bytes for. Keep that set small and
   # deliberate; it is the only pcap data worth putting in restic.
+  # tools/promote_pcaps.py stores keeps as .pcap.gz (~24x smaller).
   wire-cleanup:
     image: alpine:3.20
     container_name: honeycow-wire-cleanup

@@ -18,7 +18,13 @@ recovered):
   * oversized QR=1 packets from port 53 that are not from a research range;
   * CVE-2026-5946 trigger-shaped queries.
 
-Idempotent (`cp -n`), capped per run, and it never copies the newest file —
+Kept files are stored gzipped (`keep/<name>.pcap.gz`): a flood hour is one
+closer page repeated thousands of times and compresses ~24x, losslessly.
+Read with `zcat x.pcap.gz | tcpdump -r -`: our libpcap does not decompress and
+`tcpdump -r x.pcap.gz` silently prints NOTHING. Wireshark opens .gz directly.
+
+Idempotent (an existing `.pcap` or `.pcap.gz` in keep/ is never redone),
+capped per run, and it never copies the newest file —
 that one is still being written. Each promotion is appended to
 `<analysis>/state/pcap_promotions.jsonl` so the weekly digest can say what
 was kept and why.
@@ -59,6 +65,7 @@ CONTAINER = "honeycow-wire-cleanup"
 LOOKBACK_DAYS = 14          # wire-cleanup prunes at find -mtime +14, i.e. >= 15 days
 MAX_FILES_PER_RUN = 24
 _PCAP_RX = re.compile(r"^honeycow-(\d{8})-(\d{4})\.pcap$")
+_KEPT_RX = re.compile(r"^(honeycow-\d{8}-\d{4}\.pcap)(?:\.gz)?$")
 
 
 def trigger_events(db: Path, research_nets, our_nets,
@@ -140,14 +147,25 @@ def list_pcaps(vps: str) -> tuple[list[str], set[str]]:
                        "'ls /pcaps; echo ---KEEP---; ls /pcaps/keep 2>/dev/null'")
     top, _, keep = out.partition("---KEEP---")
     return ([n for n in top.split() if _PCAP_RX.match(n)],
-            {n for n in keep.split() if _PCAP_RX.match(n)})
+            kept_names(keep.split()))
+
+
+def kept_names(listing: list[str]) -> set[str]:
+    """Base `.pcap` names already held in keep/, compressed or not — a
+    gzipped keep must not look missing and be copied again."""
+    return {m.group(1) for n in listing if (m := _KEPT_RX.match(n))}
 
 
 def promote(vps: str, names: list[str]) -> None:
     for n in names:
         if not _PCAP_RX.match(n):  # names reach a remote shell; never trust them
             raise ValueError(f"refusing odd pcap name {n!r}")
-    cps = " && ".join(f"cp -n /pcaps/{n} /pcaps/keep/{n}" for n in names)
+    # gzip to a temp name then rename, so an interrupted run never leaves a
+    # truncated .gz that the next run would mistake for a finished keep.
+    cps = " && ".join(
+        f"{{ [ -e /pcaps/keep/{n} ] || [ -e /pcaps/keep/{n}.gz ] || "
+        f"{{ gzip -c /pcaps/{n} > /pcaps/keep/{n}.gz.part && "
+        f"mv /pcaps/keep/{n}.gz.part /pcaps/keep/{n}.gz; }}; }}" for n in names)
     _remote(vps, f"docker exec {CONTAINER} sh -c 'mkdir -p /pcaps/keep && {cps}'",
             timeout=600)
 

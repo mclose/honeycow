@@ -119,6 +119,14 @@ def test_already_kept_files_are_not_recopied():
     assert picks == {}
 
 
+def test_gzipped_keeps_count_as_kept():
+    assert pp.kept_names(["honeycow-20261029-0032.pcap.gz",
+                          "honeycow-20261029-0132.pcap",
+                          "honeycow-20261029-0232.pcap.gz.part",
+                          "php2shell-2026-10"]) == {
+        "honeycow-20261029-0032.pcap", "honeycow-20261029-0132.pcap"}
+
+
 def test_odd_pcap_names_never_reach_the_remote_shell():
     with pytest.raises(ValueError):
         pp.promote("nohost", ["honeycow-20261029-0032.pcap; rm -rf /"])

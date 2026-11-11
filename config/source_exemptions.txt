@@ -260,3 +260,12 @@
 46.151.182.0/24
 64.89.160.0/23
 83.142.209.0/24
+
+
+# --- Auto-added by tools/scanner_refresh.py ------
+# Additions only, each line naming its org and evidence. Moving an
+# entry into its org's block above is fine; the job only checks
+# coverage. Remove a wrong one by hand (PR) — the job never deletes.
+184.105.247.194/31  # Shadowserver: upstream publication (2026-11-11)
+146.88.240.0/20  # NetScout ASERT: queried asert-netscout zone 00065fea5342be91.340c.142-93-181-53.asertdnsresearch.com.; RDAP org 'Arbor Networks, Inc.' (2026-11-11)
+2602:80d:1000::/44  # Censys: research user-agent 'Mozilla/5.0 (compatible; CensysInspect/1.1; +https://about.c'; RDAP org 'Censys, Inc.' (2026-11-11)

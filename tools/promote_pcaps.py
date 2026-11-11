@@ -20,7 +20,8 @@ recovered):
 
 Kept files are stored gzipped (`keep/<name>.pcap.gz`): a flood hour is one
 closer page repeated thousands of times and compresses ~24x, losslessly.
-`tcpdump -r`, Wireshark and zeek all read `.pcap.gz` directly (or `zcat`).
+Read with `zcat x.pcap.gz | tcpdump -r -`: our libpcap does not decompress and
+`tcpdump -r x.pcap.gz` silently prints NOTHING. Wireshark opens .gz directly.
 
 Idempotent (an existing `.pcap` or `.pcap.gz` in keep/ is never redone),
 capped per run, and it never copies the newest file —

@@ -96,7 +96,8 @@ cert via DNS-01 over BIND nsupdate). All three are required.
   report finds something worth the raw bytes, copy that hour in before it
   ages out. Keeps are stored as `.pcap.gz` (`promote_pcaps` gzips on copy;
   a flood hour is one closer page repeated ~12K times and shrinks ~24x).
-  `tcpdump -r` reads `.gz` directly. Anything that lists keep/ must treat
+  Read with `zcat f.pcap.gz | tcpdump -r -` (this libpcap does NOT
+  decompress; `-r f.pcap.gz` silently prints nothing). Wireshark opens `.gz`. Anything that lists keep/ must treat
   `x.pcap.gz` as `x.pcap` or it will re-promote what is already held.
 - **tcpdump's `-i any` triples every packet** (eth0, docker bridge, veth).
   The capture filter keeps eth0's copy plus container<->container traffic —

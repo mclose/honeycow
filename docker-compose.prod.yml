@@ -80,6 +80,22 @@ networks:
       config:
         - subnet: fd00:beef:beef::/64
 
+# One BPF filter for both capture sidecars (tcpdump, zeek).
+# `-i any` sees every external packet three times: on eth0, on the docker
+# bridge and on the container's veth (the last two already DNAT'd to
+# 172.18/fd00:beef). Keep eth0's copy -- public addresses on both ends, the
+# real wire. Container<->container traffic (caddy -> honey-ns:80, the ONLY
+# plaintext view of HTTPS) crosses two veths; `outbound` keeps one of them.
+# Not `-i eth0`: that would drop the caddy -> honey-ns leg entirely.
+# Measured on live hours 2026-11-12: 35.0K -> 11.9K packets; with `outbound`
+# every remaining identical line is a genuine retransmit (SYN-ACKs to SYN
+# scanners), i.e. one copy per packet.
+x-capture-filter: &capture_filter >-
+  (port 53 or port 80 or port 443) and
+  ((not net 172.16.0.0/12 and not net fc00::/7) or
+  (outbound and ((src net 172.16.0.0/12 and dst net 172.16.0.0/12) or
+  (src net fc00::/7 and dst net fc00::/7))))
+
 services:
   honey-ns:
     # Drop public :80 (Caddy owns it). Rebind :53 to specific public
@@ -170,18 +186,7 @@ services:
       - -U
       - -w
       - /pcaps/honeycow-%Y%m%d-%H%M.pcap
-      # `-i any` sees every external packet three times: on eth0, on the
-      # docker bridge and on the container's veth (the last two already
-      # DNAT'd to 172.18/fd00:beef). Keep eth0's copy -- public addresses on
-      # both ends, the real wire -- plus the container<->container legs,
-      # which are the ONLY plaintext view of HTTPS (caddy -> honey-ns:80).
-      # Measured on a live hour: 35.0K -> 11.9K packets, nothing unique lost.
-      # Not `-i eth0`: that would drop the caddy -> honey-ns leg.
-      - >-
-        (port 53 or port 80 or port 443) and
-        ((not net 172.16.0.0/12 and not net fc00::/7) or
-        (src net 172.16.0.0/12 and dst net 172.16.0.0/12) or
-        (src net fc00::/7 and dst net fc00::/7))
+      - *capture_filter
     volumes:
       - honeycow_pcaps:/pcaps
 
@@ -204,9 +209,14 @@ services:
     # offload checksum computation to hardware; the kernel surfaces "0"
     # to userspace and Zeek would otherwise drop most packets as bad.
     command:
-      - sh
-      - -c
-      - "exec zeek -C -i any -f 'port 53 or port 80 or port 443' local LogAscii::use_json=T"
+      - zeek
+      - -C
+      - -i
+      - any
+      - -f
+      - *capture_filter
+      - local
+      - LogAscii::use_json=T
     volumes:
       - honeycow_zeek:/zeek/logs
 

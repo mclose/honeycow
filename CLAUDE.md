@@ -102,8 +102,10 @@ cert via DNS-01 over BIND nsupdate). All three are required.
 - **tcpdump's `-i any` triples every packet** (eth0, docker bridge, veth).
   The capture filter keeps eth0's copy plus container<->container traffic —
   the caddy -> honey-ns:80 leg is the *only* plaintext of HTTPS, which is why
-  the fix is a BPF filter and not `-i eth0`. Pcaps from before 2026-11-11
-  are still tripled; count packets accordingly. zeek is also `-i any`. Keep the set small and deliberate — it is the only pcap data
+  the fix is a BPF filter and not `-i eth0`; `outbound` keeps one of that
+  leg's two veth copies. One `x-capture-filter` anchor in
+  `docker-compose.prod.yml` feeds both tcpdump and zeek — change it there.
+  Pcaps before 2026-11-12 02:09 UTC are tripled; zeek logs before #74 too. Keep the set small and deliberate — it is the only pcap data
   worth backing up. (`backup-prep.sh` on the VPS deliberately excludes the
   rotating pcaps; it stages `honeycow_logs`, zeek, caddy/acme and `/etc`.)
 - **Caddy + acme are mandatory, not opt-in.** honeycow.net needs HTTPS

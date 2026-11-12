@@ -211,14 +211,18 @@ def test_env_example_ratelimit_matches_code_defaults():
         )
 
 
-def test_tcpdump_dedups_any_but_keeps_the_internal_plaintext_leg():
-    """`-i any` triples every external packet; the filter keeps eth0's copy.
-    It must also keep container<->container traffic: caddy -> honey-ns:80 is
-    the only plaintext view of HTTPS, and plain `-i eth0` would lose it."""
+def test_captures_dedup_any_but_keep_the_internal_plaintext_leg():
+    """`-i any` triples every external packet; one shared filter keeps eth0's
+    copy for tcpdump AND zeek. It must also keep container<->container
+    traffic (caddy -> honey-ns:80 is the only plaintext view of HTTPS; plain
+    `-i eth0` would lose it), once, via `outbound`."""
     text = _strip_comments((ROOT / "docker-compose.prod.yml").read_text())
-    block = text.split("container_name: honeycow-tcpdump", 1)[1].split("volumes:", 1)[0]
-    flat = " ".join(block.split())
-    assert "- -i - any" in flat
+    flat = " ".join(text.split())
+    assert "x-capture-filter: &capture_filter" in flat
+    for svc in ("honeycow-tcpdump", "honeycow-zeek"):
+        block = text.split(f"container_name: {svc}", 1)[1].split("volumes:", 1)[0]
+        assert "*capture_filter" in block, svc
+        assert "- any" in block, svc
     assert "not net 172.16.0.0/12 and not net fc00::/7" in flat
-    assert "src net 172.16.0.0/12 and dst net 172.16.0.0/12" in flat
-    assert "src net fc00::/7 and dst net fc00::/7" in flat
+    assert ("outbound and ((src net 172.16.0.0/12 and dst net 172.16.0.0/12) or "
+            "(src net fc00::/7 and dst net fc00::/7))") in flat

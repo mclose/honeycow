@@ -28,7 +28,9 @@ exemption list).
 
 Two-remote:
 
-- `origin` → `git@github.com:mclose/honeycow.git` (private; CI on push/PR)
+- `origin` → `git@github.com:mclose/honeycow.git` (**public**; CI on push/PR).
+  Commit messages, PRs and issues here are world-readable; incident
+  write-ups and weakness analysis belong in a private tracker, not here.
 - `prod` → `honeycow:honeycow.git` (bare repo, post-receive hook
   checks out main into `~/projects/honeycow` and runs `make up-prod`)
 
@@ -108,6 +110,32 @@ cert via DNS-01 over BIND nsupdate). All three are required.
   Pcaps before 2026-11-12 02:09 UTC are tripled; zeek logs before #74 too. Keep the set small and deliberate — it is the only pcap data
   worth backing up. (`backup-prep.sh` on the VPS deliberately excludes the
   rotating pcaps; it stages `honeycow_logs`, zeek, caddy/acme and `/etc`.)
+- **Zeek truncates its logs on restart; rotation is what keeps them.** Without
+  `Log::default_rotation_interval` every log stays open for the whole run, and
+  the next process truncates each file on its first write, so a crash or OOM
+  restart deletes the record of what led up to it. A named volume doesn't
+  help: the files persist and are overwritten in place. `zeek/honeycow.zeek`
+  rotates hourly and sets `LogAscii::enable_leftover_log_rotation`. Rotation
+  alone still loses the current hour to a SIGKILL. With leftover rotation,
+  the next start renames the orphaned file instead (tested with
+  `docker kill -s KILL`). Rotated files are `<stream>.<open-time>.log`; the
+  current one keeps its plain name, which `report_wire.py` reads.
+- **Zeek's memory is per-connection state, bounded by `tcp_inactivity_timeout`.**
+  Half-open TCP (SYN, no handshake) is held for the full inactivity timeout,
+  so peak memory ~ new-connection rate x that timeout. The attempt/SYN timers
+  (`tcp_attempt_delay`, `tcp_SYN_timeout`) do **not** move it, and nor does
+  dropping scripts or the weird log. Measured by replaying a pcap with
+  `zeek -C -r` under a cgroup and reading `/sys/fs/cgroup/memory.peak`:
+  do that before changing the timeout or the zeek `mem_limit`. The cap is the
+  bound and the timeout is the slope; ship neither without the other.
+- **A per-source SYN limit on 80/443 is not a cheap win here.** Real HTTP
+  scanners reach ~300 new connections/s from a single source (each request is
+  its own connection: the closer sends `Connection: close`), which is within
+  2x of a small flood's per-source rate. A limit tight enough to stop one cuts
+  off the aggressive scanners behind the hot days. If one is ever added, it
+  must go in ufw-docker's block in `/etc/ufw/after.rules` (a rule inserted
+  into `DOCKER-USER` directly is wiped by `ufw reload`) and use a `[UFW ...]`
+  log prefix, or rsyslog won't route it to `ufw.log`.
 - **Caddy + acme are mandatory, not opt-in.** honeycow.net needs HTTPS
   (Caddy terminates TLS) and honeycow itself can't (and shouldn't) terminate
   TLS. The merged `docker-compose.prod.yml` reflects this. There is no

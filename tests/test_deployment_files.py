@@ -24,6 +24,7 @@ def test_required_files_exist():
         "CLAUDE.md",
         "CHANGELOG.md",
         "static/index.html",
+        "zeek/honeycow.zeek",
         "tools/healthcheck.py",
         "squatter/__init__.py",
         "squatter/base.py",
@@ -226,3 +227,48 @@ def test_captures_dedup_any_but_keep_the_internal_plaintext_leg():
     assert "not net 172.16.0.0/12 and not net fc00::/7" in flat
     assert ("outbound and ((src net 172.16.0.0/12 and dst net 172.16.0.0/12) or "
             "(src net fc00::/7 and dst net fc00::/7))") in flat
+
+
+def _prod_service_block(container_name: str) -> str:
+    text = _strip_comments((ROOT / "docker-compose.prod.yml").read_text())
+    rest = text.split(f"container_name: {container_name}\n", 1)[1]
+    # A service block ends at the next top-level service key (two-space indent).
+    lines = []
+    for ln in rest.splitlines():
+        if ln.startswith("  ") and not ln.startswith("   ") and ln.strip().endswith(":"):
+            break
+        if ln and not ln.startswith(" "):
+            break
+        lines.append(ln)
+    return "\n".join(lines)
+
+
+def test_every_prod_service_has_a_memory_cap():
+    """On a 1 GB host one uncapped service can take every page. honey-ns gets
+    its cap from docker-compose.yml; every prod sidecar sets its own."""
+    for svc in ("honeycow-caddy", "honeycow-acme", "honeycow-tcpdump",
+                "honeycow-zeek", "honeycow-wire-cleanup"):
+        assert "mem_limit:" in _prod_service_block(svc), f"{svc} has no mem_limit"
+    assert "mem_limit:" in (ROOT / "docker-compose.yml").read_text()
+
+
+def test_zeek_is_capped_without_swap_and_loads_site_policy():
+    block = _prod_service_block("honeycow-zeek")
+    limit = next(ln.split(":", 1)[1].strip() for ln in block.splitlines()
+                 if ln.strip().startswith("mem_limit:"))
+    swap = next(ln.split(":", 1)[1].strip() for ln in block.splitlines()
+                if ln.strip().startswith("memswap_limit:"))
+    assert limit == swap, "memswap_limit must equal mem_limit (no swap for zeek)"
+    # The site script must load AFTER `local` so its redefs win.
+    cmd = [ln.strip()[2:] for ln in block.splitlines() if ln.strip().startswith("- ")]
+    assert cmd.index("/zeek/site/honeycow.zeek") > cmd.index("local")
+    # Directory bind, not a single-file bind (inode pinning; see CLAUDE.md).
+    assert "./zeek:/zeek/site:ro" in block
+
+
+def test_zeek_site_policy_bounds_state_and_survives_restarts():
+    """Each line here was measured or tested, see CLAUDE.md's Zeek gotchas."""
+    text = (ROOT / "zeek" / "honeycow.zeek").read_text()
+    assert "redef tcp_inactivity_timeout = 30 sec;" in text
+    assert "redef Log::default_rotation_interval = 1 hr;" in text
+    assert "redef LogAscii::enable_leftover_log_rotation = T;" in text

@@ -110,6 +110,7 @@ services:
     image: caddy:2-alpine
     container_name: honeycow-caddy
     restart: unless-stopped
+    mem_limit: 192m
     read_only: true
     tmpfs:
       - /tmp:size=8m,mode=1777
@@ -140,6 +141,7 @@ services:
     image: neilpang/acme.sh:latest
     container_name: honeycow-acme
     restart: unless-stopped
+    mem_limit: 128m
     command: daemon
     environment:
       NSUPDATE_SERVER: ${ACME_NSUPDATE_SERVER:?ACME_NSUPDATE_SERVER must be set to the BIND host accepting TSIG updates}
@@ -168,6 +170,7 @@ services:
     image: honeycow-tcpdump:latest
     container_name: honeycow-tcpdump
     restart: unless-stopped
+    mem_limit: 64m
     network_mode: host
     read_only: true
     cap_drop:
@@ -193,11 +196,23 @@ services:
   # Wire-monitoring sidecar: Zeek protocol analyzer on host network.
   # Default `local` script emits conn.log, dns.log, http.log, weird.log,
   # etc. JSON output for easier diffing against honeycow events.jsonl.
+  # zeek/honeycow.zeek (loaded after `local`) shortens the half-open TCP
+  # timeout and turns on hourly rotation that survives a SIGKILL. Read it
+  # before changing either.
+  #
+  # Zeek is the only service here whose memory grows with traffic, because
+  # it keeps state per connection. The cap keeps that growth in this
+  # container. If Zeek hits it, Zeek alone is OOM-killed and restarted; the
+  # rest of the stack keeps serving, and it costs some capture, not the site.
+  # A normal hour peaks near 100 MiB. memswap_limit = mem_limit, so Zeek
+  # never gets swap even if the host has some.
   zeek:
     image: zeek/zeek:7.1
     container_name: honeycow-zeek
     restart: unless-stopped
     network_mode: host
+    mem_limit: 400m
+    memswap_limit: 400m
     cap_drop:
       - ALL
     # NET_RAW alone is sufficient for passive AF_PACKET capture (same
@@ -216,9 +231,12 @@ services:
       - -f
       - *capture_filter
       - local
+      - /zeek/site/honeycow.zeek
       - LogAscii::use_json=T
     volumes:
       - honeycow_zeek:/zeek/logs
+      # Directory bind, not a single-file bind: see the inode gotcha in CLAUDE.md.
+      - ./zeek:/zeek/site:ro
 
   # Tiny housekeeping loop, hourly: prune Zeek logs older than 7 days and
   # pcaps older than 14. This loop is the ONLY thing bounding either volume.
@@ -240,6 +258,7 @@ services:
     image: alpine:3.20
     container_name: honeycow-wire-cleanup
     restart: unless-stopped
+    mem_limit: 32m
     read_only: true
     cap_drop:
       - ALL

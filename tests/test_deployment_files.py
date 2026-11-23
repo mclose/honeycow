@@ -229,8 +229,8 @@ def test_captures_dedup_any_but_keep_the_internal_plaintext_leg():
             "(src net fc00::/7 and dst net fc00::/7))") in flat
 
 
-def _prod_service_block(container_name: str) -> str:
-    text = _strip_comments((ROOT / "docker-compose.prod.yml").read_text())
+def _prod_service_block(container_name: str, compose: str = "docker-compose.prod.yml") -> str:
+    text = _strip_comments((ROOT / compose).read_text())
     rest = text.split(f"container_name: {container_name}\n", 1)[1]
     # A service block ends at the next top-level service key (two-space indent).
     lines = []
@@ -272,3 +272,27 @@ def test_zeek_site_policy_bounds_state_and_survives_restarts():
     assert "redef tcp_inactivity_timeout = 30 sec;" in text
     assert "redef Log::default_rotation_interval = 1 hr;" in text
     assert "redef LogAscii::enable_leftover_log_rotation = T;" in text
+
+
+def test_internet_facing_listeners_answer_spoofed_syns_once():
+    """net.ipv4.tcp_* is per network namespace, so host sysctls don't reach
+    containers. Every service that accepts TCP from the internet carries its
+    own. Stock settings measured 6 SYN-ACKs out per spoofed SYN in."""
+    for f, svc in (("docker-compose.yml", "honeycow"),
+                   ("docker-compose.prod.yml", "honeycow-caddy"),
+                   ("docker-compose.cow.yml", "honeycow-caddy")):
+        block = _prod_service_block(svc, f)
+        assert "net.ipv4.tcp_syncookies: 2" in block, f"{f}:{svc}"
+        assert "net.ipv4.tcp_synack_retries: 1" in block, f"{f}:{svc}"
+
+
+def test_host_harden_script_is_safe_to_run():
+    path = ROOT / "deploy" / "host" / "harden.sh"
+    assert path.is_file() and path.stat().st_mode & 0o111
+    text = path.read_text()
+    assert "--dry-run" in text and "set -euo pipefail" in text
+    # Firewall edits are validated before ufw ever reloads them.
+    assert '"$tool" -n --test' in text
+    # rsyslog routes only "[UFW " prefixes to ufw.log, which the index reads.
+    assert '--log-prefix "[UFW HALFOPEN CAP] "' in text
+    assert "--connlimit-above $HALFOPEN_CAP" in text

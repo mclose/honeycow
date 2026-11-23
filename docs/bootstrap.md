@@ -47,19 +47,21 @@ sudo systemctl restart systemd-resolved
 your cloud provider injected; the only thing that changes is that no
 process is bound to `:53` locally.
 
-### 2. (Optional) Add swap
+### 2. Swap and kernel settings
 
-The committed memory limit on the honey-ns container is 256 MB, but the
-acme + Caddy sidecars and the kernel itself can spike during cert
-renewals. 1 GB of swap is cheap insurance:
+Run after the repo is checked out (the prod post-receive hook does that):
 
 ```bash
-sudo fallocate -l 1G /swapfile
-sudo chmod 600 /swapfile
-sudo mkswap /swapfile
-sudo swapon /swapfile
-echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+sudo deploy/host/harden.sh --dry-run --only swap,sysctl
+sudo deploy/host/harden.sh --only swap,sysctl
 ```
+
+This adds 1 GiB `/swapfile` (low swappiness) and `/etc/sysctl.d/90-honeycow.conf`:
+a 65536-entry conntrack table, and SYN cookies always on with one SYN-ACK
+retry for host listeners. It's idempotent. Without swap, memory pressure on a
+1 GB box turns into thrashing (ssh unusable) long before the OOM killer acts.
+The containers' own TCP settings are in compose (`sysctls:`), because
+`net.ipv4.tcp_*` is per network namespace: the host values don't reach them.
 
 ### 3. (Optional) Set timezone
 
@@ -237,6 +239,18 @@ sudo ufw logging medium
 
 `medium` rate-limits kernel-side; logs land at `/var/log/ufw.log` and
 rotate weekly via the distro's default `/etc/logrotate.d/ufw`.
+
+Then add the per-source half-open TCP cap. It goes inside ufw-docker's block,
+so it has to come after `ufw-docker install`:
+
+```bash
+sudo deploy/host/harden.sh --dry-run --only firewall
+sudo deploy/host/harden.sh --only firewall      # --remove-firewall undoes it
+```
+
+It drops new SYNs to 53/80/443 from a source that already has more than 256
+live conntrack entries (closed and TIME_WAIT ones don't count), and logs
+`[UFW HALFOPEN CAP]` to `ufw.log`.
 
 ## Verification
 

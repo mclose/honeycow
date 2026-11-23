@@ -91,6 +91,16 @@ services:
     image: caddy:2-alpine
     container_name: honeycow-caddy
     restart: unless-stopped
+    # A spoofed SYN makes this socket send a SYN-ACK to the forged source.
+    # Stock settings keep each half-open connection queued and retransmit
+    # its SYN-ACK up to 5 times: ~6 packets out per packet in (measured with
+    # a spoofing rig and a backlog-4096 listener, as Go/Caddy use).
+    # syncookies=2 answers every SYN with one stateless cookie, so
+    # exactly 1 out per 1 in, and no queue to fill. retries=1 covers anything
+    # that still queues. Clients that lose the SYN-ACK retransmit their SYN.
+    sysctls:
+      net.ipv4.tcp_syncookies: 2
+      net.ipv4.tcp_synack_retries: 1
     read_only: true
     tmpfs:
       - /tmp:size=8m,mode=1777

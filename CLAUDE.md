@@ -128,14 +128,24 @@ cert via DNS-01 over BIND nsupdate). All three are required.
   `zeek -C -r` under a cgroup and reading `/sys/fs/cgroup/memory.peak`:
   do that before changing the timeout or the zeek `mem_limit`. The cap is the
   bound and the timeout is the slope; ship neither without the other.
-- **A per-source SYN limit on 80/443 is not a cheap win here.** Real HTTP
-  scanners reach ~300 new connections/s from a single source (each request is
-  its own connection: the closer sends `Connection: close`), which is within
-  2x of a small flood's per-source rate. A limit tight enough to stop one cuts
-  off the aggressive scanners behind the hot days. If one is ever added, it
-  must go in ufw-docker's block in `/etc/ufw/after.rules` (a rule inserted
-  into `DOCKER-USER` directly is wiped by `ufw reload`) and use a `[UFW ...]`
-  log prefix, or rsyslog won't route it to `ufw.log`.
+- **Every TCP listener is a SYN-ACK reflector; bound it per victim, not per rate.**
+  A spoofed SYN makes us send a SYN-ACK to the forged source. Stock Linux
+  queues the half-open connection and retransmits up to 5 times: measured 6
+  packets out per packet in on a backlog-4096 listener (Go/Caddy listen at
+  somaxconn). `tcp_syncookies=2` + `tcp_synack_retries=1` make it exactly 1:1.
+  These are **per network namespace**: the host's `/etc/sysctl.d` doesn't
+  reach containers, so every internet-facing service carries them in compose
+  `sysctls:` (pinned by `tests/test_deployment_files.py`). Getting below 1:1
+  needs the host firewall. A *rate* limit can't separate a victim from a real
+  scanner (~300 new connections/s from one source, since the closer sends
+  `Connection: close`). Handshake completion can: `connlimit` counts a
+  source's live conntrack entries and skips closed and TIME_WAIT ones. A victim never
+  completes, so its count climbs to the cap; a scanner never accumulates (rig:
+  4119 conn/s, 0 failures). `deploy/host/harden.sh` installs it inside
+  ufw-docker's block in `/etc/ufw/after*.rules` (a rule added to
+  `DOCKER-USER` directly is wiped by `ufw reload`) with a `[UFW ...]` log
+  prefix so rsyslog routes it to `ufw.log`. Host-level, not deployed by
+  `make deploy`: a rebuilt host needs the script run again (docs/bootstrap.md).
 - **Caddy + acme are mandatory, not opt-in.** honeycow.net needs HTTPS
   (Caddy terminates TLS) and honeycow itself can't (and shouldn't) terminate
   TLS. The merged `docker-compose.prod.yml` reflects this. There is no

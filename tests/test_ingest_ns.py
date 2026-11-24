@@ -296,3 +296,70 @@ def test_a_qname_with_a_comma_past_the_sniff_sample_still_ingests(tmp_path):
         "SELECT asked, qname FROM ns_queries WHERE day = '2026-10-19'").fetchall()
     con.close()
     assert names == [("A,AAAA", "a,aaaa")]
+
+
+def _day_counts(db):
+    import duckdb
+    con = duckdb.connect(str(db), read_only=True)
+    out = dict(con.execute("SELECT day, COUNT(*) FROM ns_queries GROUP BY day").fetchall())
+    con.close()
+    return out
+
+
+def test_a_day_keeps_rows_whose_file_has_left_the_mirror(tmp_path):
+    """The mirror holds only the newest files, so the file with a day's first
+    half can be gone when the second half's file is re-read. Replacing the day
+    whole would delete that half; it must survive, including a row at the same
+    millisecond as the split, without the input's copy doubling it."""
+    pytest.importorskip("duckdb")
+    d = tmp_path / "logs" / "ns1"
+    d.mkdir(parents=True)
+    early = FILE_LINE.replace("07:40:56.791", "01:00:00.000")
+    tie_old = FILE_LINE.replace("07:40:56.791", "12:00:00.000")
+    tie_new = tie_old.replace("76.13.112.47", "9.9.9.9")
+    late = FILE_LINE.replace("07:40:56.791", "23:00:00.000")
+    nextday = FILE_LINE.replace("24-Sep-2026", "25-Sep-2026")
+    (d / "queries.log.0").write_text(f"{early}\n{tie_old}\n")
+    (d / "queries.log").write_text(f"{tie_new}\n")
+    db = tmp_path / "ns.duckdb"
+    argv = ["--logs", str(tmp_path / "logs"), "--db", str(db), "--hosts", "ns1"]
+    assert ing.main(argv) == 0
+    assert _day_counts(db) == {"2026-09-24": 3}
+
+    # The rotation, seen as the trimmed mirror sees it: the old .0 is gone and
+    # the old live file, finished, is the new .0. A new live file starts.
+    (d / "queries.log.0").write_text(f"{tie_new}\n{late}\n")
+    (d / "queries.log").write_text(f"{nextday}\n")
+    assert ing.main(argv) == 0
+    assert _day_counts(db) == {"2026-09-24": 4, "2026-09-25": 1}
+
+    # And re-running changes nothing.
+    assert ing.main(argv + ["--force"]) == 0
+    assert _day_counts(db) == {"2026-09-24": 4, "2026-09-25": 1}
+
+
+def test_old_mirror_files_are_deleted_only_once_recorded(tmp_path):
+    """queries.log.2+ and named.log.* are no longer pulled; ingest deletes the
+    local copies, but never one whose rows are not yet in the index."""
+    pytest.importorskip("duckdb")
+    d = tmp_path / "logs" / "ns1"
+    d.mkdir(parents=True)
+    for name in ("queries.log", "queries.log.0", "queries.log.1", "queries.log.2",
+                 "named.log.1"):
+        (d / name).write_text(FILE_LINE + "\n")
+    db = tmp_path / "ns.duckdb"
+    argv = ["--logs", str(tmp_path / "logs"), "--db", str(db), "--hosts", "ns1"]
+
+    assert ing.main(argv + ["--dry-run"]) == 0
+    assert (d / "queries.log.2").exists(), "dry-run must not delete"
+
+    assert ing.main(argv) == 0
+    left = sorted(p.name for p in d.iterdir())
+    assert left == ["queries.log", "queries.log.0", "queries.log.1"]
+    assert _day_counts(db) == {"2026-09-24": 5}
+
+    # A file that arrives changed after the last record is kept until read.
+    (d / "queries.log.3").write_text(FILE_LINE + "\n")
+    assert ing.prune_mirror(__import__("duckdb").connect(str(db)),
+                            tmp_path / "logs", ["ns1"]) == 0
+    assert (d / "queries.log.3").exists()

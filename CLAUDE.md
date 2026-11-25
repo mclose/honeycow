@@ -275,6 +275,14 @@ cert via DNS-01 over BIND nsupdate). All three are required.
   (`ns_files.min_day/max_day`): between rotations only `queries.log` changes,
   and its first day is shared with `queries.log.0`. Without that the boundary
   day silently lost up to two thirds of its rows.
+  **For the nameservers, `ns.duckdb` is the record, not the raw files.** The
+  mirror keeps only `queries.log`, `.0` and `.1` per host (mirroring all 20
+  BIND rotations held 4.6 GB that the index already had); ingest deletes older
+  local copies once their fingerprint is recorded. So a day's replace starts at
+  the earliest timestamp the input has for that day, and rows before it (from a
+  file that has left the mirror) are kept. `ingest-ns --rebuild` rebuilds from
+  the mirror alone and loses everything older: unlike `honeycow.db`, this
+  index is not rebuildable from raw.
   **pdns-nyc2** (PowerDNS on a DO address, serving only the ECS test zone
   `ecs.lab.deflationhollow.net`) is the fourth host. It logs to a journald
   namespace, so its pull is `journalctl` from a cursor kept in

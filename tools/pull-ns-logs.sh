@@ -12,9 +12,15 @@
 # WHY RSYNC AND NOT A BYTE-TAIL. honeycow's events.jsonl is append-only, so
 # pull-logs.sh can tail it by offset. BIND *rotates*: queries.log becomes
 # queries.log.0, .0 becomes .1, and so on. An offset into "queries.log" means
-# something different after every rotation. rsync's size+mtime quick-check
-# skips the rotated files (immutable once rotated) and moves only the live
-# file, which BIND caps at 100 MB — compressed, a few MB per run.
+# something different after every rotation, so rsync compares by name and
+# re-fetches whatever changed.
+#
+# ONLY THE NEWEST THREE FILES. BIND keeps 20 x 100 MB per host, and mirroring
+# all of them held 4.6 GB on the report host that the DuckDB index already
+# holds. The mirror is a staging area, not an archive: ns.duckdb is the record
+# (it reaches back past anything the nameservers still keep). queries.log and
+# .0 carry every new row; .1 is margin for two rotations between pulls. Older
+# local copies are deleted by ingest_ns.py once their rows are recorded.
 #
 # The files are 0640 bind:adm inside a 0750 directory, so the remote side runs
 # rsync under sudo. Passwordless sudo for the pulling user is required; that is
@@ -108,28 +114,23 @@ for host in $HOSTS; do
         pull_pdns "$host" "$target" || log "WARNING: $host failed — continuing with the others"
         continue
     fi
-    # --ignore-existing on the rotated files would be wrong: a rotation shifts
-    # content between names, so let rsync compare and re-fetch what changed.
-    # Only queries.log* is taken; the other channels (dnssec, xfer, security)
-    # are not what this index is for and would multiply the transfer.
+    # --ignore-existing would be wrong: a rotation shifts content between
+    # names, so let rsync compare and re-fetch what changed. Only the query
+    # channel is taken; the others (dnssec, xfer, security) are not what this
+    # index is for. The pre-2026-08-01 syslog history (named.log.*) is already
+    # in the index and is no longer pulled.
     rsync -az --info=stats1 $DRY_RUN \
         --rsync-path="sudo -n rsync" \
-        --include='queries.log*' \
-        --include='named.log.*' \
+        --include='queries.log' \
+        --include='queries.log.0' \
+        --include='queries.log.1' \
         --exclude='*' \
         "$host:/var/log/named/" "$target/" 2>&1 | sed 's/^/    /' >&2 || {
             log "WARNING: $host failed — continuing with the others"
             continue
         }
-    # The pre-true-up syslog history on ns1/ns2 lives outside /var/log/named/.
-    # It is a different timestamp format (ingest_ns.py handles both) and about
-    # four extra weeks. Absent on a host that was always file-based.
-    rsync -az --info=stats1 $DRY_RUN \
-        --rsync-path="sudo -n rsync" \
-        "$host:/var/log/named.log.*" "$target/" 2>&1 | sed 's/^/    /' >&2 || true
 done
 
 if [ -z "$DRY_RUN" ]; then
-    total_after=$(du -sk "$DEST" 2>/dev/null | cut -f1)
     log "done — $DEST now $(du -sh "$DEST" 2>/dev/null | cut -f1) (was $((total_before/1024)) MB)"
 fi

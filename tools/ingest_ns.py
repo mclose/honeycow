@@ -25,6 +25,14 @@ input is deleted and rewritten whole. Re-running over overlapping pulls is
 therefore free of double-counting, which is the same guarantee `ingest.py`
 gets from its rowhash — bought here with a partition drop, because a per-row
 hash cost 6x the load time and 0.8 GB when measured against a table this size.
+
+THE INDEX IS THE RECORD, NOT THE MIRROR. pull-ns-logs.sh keeps only the newest
+three BIND files per host, and this script deletes older local copies once
+their rows are recorded. So a day can have rows here whose file is gone, and
+"replace the day whole" would delete them. The replace therefore starts at the
+earliest timestamp the input has for each day: rows before it are kept. At that
+exact millisecond, input rows already present are not inserted twice.
+`--rebuild` rebuilds from the mirror alone and loses everything older.
 """
 
 from __future__ import annotations
@@ -125,6 +133,18 @@ ALTER TABLE ns_files ADD COLUMN IF NOT EXISTS max_day VARCHAR;
 """
 
 
+# BIND files kept in the mirror. Anything else BIND-shaped (queries.log.2+,
+# the pre-true-up named.log.* syslog history) is deleted once its fingerprint
+# is recorded: the index has its rows, and pull-ns-logs.sh no longer fetches it.
+MIRROR_KEEP = frozenset({"queries.log", "queries.log.0", "queries.log.1"})
+
+
+def prunable(path: Path) -> bool:
+    n = path.name
+    return (n.startswith("queries.log") or n.startswith("named.log.")) \
+        and n not in MIRROR_KEEP
+
+
 def log_files(root: Path, host: str) -> list[Path]:
     d = root / host
     if not d.is_dir():
@@ -219,6 +239,21 @@ def _copy_rows(path: Path, host: str, w, only: set[str] | None, counts: list[int
     return (lo, hi) if lo else None
 
 
+def prune_mirror(con, root: Path, hosts: list[str]) -> int:
+    """Delete local BIND files outside MIRROR_KEEP whose exact contents
+    (name + size + mtime) are recorded. A file not yet ingested, or changed
+    since, stays until a run records it. -> number deleted."""
+    n = 0
+    for host in hosts:
+        for q in log_files(root, host):
+            if prunable(q) and seen(con, host, q, force=False):
+                q.unlink()
+                con.execute("DELETE FROM ns_files WHERE host = ? AND name = ?",
+                            [host, q.name])
+                n += 1
+    return n
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Index BIND query logs into DuckDB.")
     analysis = Path(os.environ.get("HONEYCOW_ANALYSIS_DIR",
@@ -227,7 +262,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--db", type=Path, default=analysis / "ns.duckdb")
     ap.add_argument("--hosts", default=os.environ.get("HONEYCOW_NS_HOSTS",
                                                 "ns1 ns2 ns3 pdns-nyc2"))
-    ap.add_argument("--rebuild", action="store_true", help="drop and rebuild the table")
+    ap.add_argument("--rebuild", action="store_true",
+                    help="drop and rebuild the table from the mirror ALONE: the "
+                         "mirror holds only the newest files, so every older "
+                         "row is lost")
     ap.add_argument("--force", action="store_true",
                     help="re-read files even if unchanged since last ingest")
     ap.add_argument("--dry-run", action="store_true",
@@ -249,6 +287,9 @@ def main(argv: list[str] | None = None) -> int:
             total += rows
             print(f"[dry-run] {host}: {len(paths)} file(s), {good:,} queries parsed, "
                   f"{bad:,} unparsed")
+            for q in paths:
+                if prunable(q):
+                    print(f"[dry-run] {host}: would delete {q.name} once its rows are recorded")
         print(f"[dry-run] {total:,} rows would be written to {args.db}")
         return 0
 
@@ -328,11 +369,24 @@ def main(argv: list[str] | None = None) -> int:
             if not stats[0]:
                 con.execute("ROLLBACK")
                 continue
-        # Partition replace: every (host, day) present in this input is
-        # rewritten whole, so an overlapping re-pull cannot double-count.
-            con.execute("DELETE FROM ns_queries WHERE host = ? AND day IN "
-                        "(SELECT DISTINCT day FROM staging)", [host])
-            con.execute("INSERT INTO ns_queries SELECT * FROM staging")
+        # Partition replace from each day's earliest input timestamp (t0): an
+        # overlapping re-pull cannot double-count, and rows before t0, whose
+        # file may have left the mirror, survive. At t0 itself rows can come
+        # from both sides of a rotation, so EXCEPT ALL inserts only the input
+        # rows not already there (multiplicity kept).
+            con.execute("CREATE OR REPLACE TEMP TABLE floors AS "
+                        "SELECT day, MIN(ts) AS t0 FROM staging GROUP BY day")
+            con.execute("DELETE FROM ns_queries USING floors f WHERE "
+                        "ns_queries.host = ? AND ns_queries.day = f.day "
+                        "AND ns_queries.ts > f.t0", [host])
+            con.execute("INSERT INTO ns_queries SELECT s.* FROM staging s "
+                        "JOIN floors f ON s.day = f.day AND s.ts > f.t0")
+            con.execute("INSERT INTO ns_queries "
+                        "SELECT s.* FROM staging s JOIN floors f "
+                        "ON s.day = f.day AND s.ts = f.t0 "
+                        "EXCEPT ALL "
+                        "SELECT q.* FROM ns_queries q JOIN floors f "
+                        "ON q.day = f.day AND q.ts = f.t0 WHERE q.host = ?", [host])
             for q, s in spans.items():
                 remember(con, host, q, s)
             con.execute("COMMIT")
@@ -344,12 +398,14 @@ def main(argv: list[str] | None = None) -> int:
               f"{len(fresh)}/{len(paths)} file(s) changed, "
               f"{neighbours} neighbour(s) re-read for shared days", file=sys.stderr)
 
+    pruned = prune_mirror(con, args.logs, hosts)
     n = con.execute("SELECT COUNT(*) FROM ns_queries").fetchone()[0]
     con.execute("CHECKPOINT")
     con.close()
     size = args.db.stat().st_size / 1e9
     print(f"ingest-ns: wrote {written:,} rows; table now {n:,} rows, "
-          f"{size:.2f} GB at {args.db}", file=sys.stderr)
+          f"{size:.2f} GB at {args.db}; {pruned} old mirror file(s) deleted",
+          file=sys.stderr)
     return 0
 
 
